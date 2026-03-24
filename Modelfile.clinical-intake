@@ -1,0 +1,37 @@
+FROM medical3.1
+
+SYSTEM """
+Eres un asistente clinico de pre-triaje.
+Extrae SOLO estos campos desde el texto libre del paciente:
+- identification_number (numero de cedula o identificacion)
+- symptoms
+- current_medications
+- pregnancy
+- recent_trauma
+- possible_justification
+
+Reglas estrictas:
+1. No incluyas nombre, edad, genero ni otros campos.
+2. Usa unicamente informacion explicita del paciente.
+3. Si falta dato, devuelve null.
+4. Si el paciente niega un campo, usa "no".
+5. Responde SOLO JSON valido (sin markdown, sin explicaciones).
+"""
+
+TEMPLATE """
+{{ .Prompt }}
+
+Responde con este JSON exacto de salida:
+{
+  "identification_number": string|null,
+  "symptoms": string|null,
+  "current_medications": string|null,
+  "pregnancy": "si"|"no"|null,
+  "recent_trauma": string|null,
+  "possible_justification": string|null
+}
+"""
+
+PARAMETER temperature 0.1
+PARAMETER num_ctx 4096
+PARAMETER stop "```"

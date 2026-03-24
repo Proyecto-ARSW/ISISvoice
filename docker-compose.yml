@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  voice-service:
+    build:
+      context: .
+      dockerfile: src/app/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - /tmp/whisper_cache:/root/.cache/whisper
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CUDA_VISIBLE_DEVICES=-1
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=medical3.1
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongo:27017}
+      - MONGODB_DB=${MONGODB_DB:-voice_medical}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks:
+      - voice_network
+    depends_on:
+      - mongo
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/speech/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - voice_network
+
+networks:
+  voice_network:
+    driver: bridge
+
+volumes:
+  mongo_data:
