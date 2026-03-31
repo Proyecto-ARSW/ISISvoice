@@ -1,78 +1,52 @@
-resource "aws_security_group" "voice_sg" {
-  name        = "${var.project_name}-sg"
-  description = "Security group for Voice Medical API"
+terraform {
+  required_version = ">= 1.0"
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_ssh_cidr]
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
   }
 
-  ingress {
-    description = "FastAPI"
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Ollama"
-    from_port   = 11434
-    to_port     = 11434
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.project_name}-sg"
-  }
+  # Uncomment to use remote state storage
+  # backend "s3" {
+  #   bucket         = "voice-medical-tfstate"
+  #   key            = "prod/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   encrypt        = true
+  #   dynamodb_table = "terraform-locks"
+  # }
 }
 
-data "aws_ami" "ubuntu_2204" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
+# ========== Local Variables ==========
 
 locals {
-  selected_ami_id = var.ami_id != "" ? var.ami_id : data.aws_ami.ubuntu_2204.id
-}
-
-resource "aws_instance" "voice_api" {
-  ami                    = local.selected_ami_id
-  instance_type          = var.instance_type
-  key_name               = var.key_name
-  vpc_security_group_ids = [aws_security_group.voice_sg.id]
-
-  user_data = <<-EOT
-    #!/bin/bash
-    set -eux
-    apt-get update -y
-    apt-get install -y docker.io docker-compose-plugin git
-    systemctl enable docker
-    systemctl start docker
-  EOT
-
-  tags = {
-    Name = "${var.project_name}-ec2"
+  common_tags = {
+    Project     = var.project_name
+    Environment = var.environment
+    CreatedAt   = timestamp()
+    ManagedBy   = "Terraform"
   }
 }
+
+# ========== AWS Module (Main Deployment) ==========
+
+module "aws_deployment" {
+  source = "./modules/aws"
+
+  aws_region              = var.aws_region
+  project_name            = var.project_name
+  environment             = var.environment
+  vpc_cidr                = var.vpc_cidr
+  ecs_task_cpu            = var.ecs_task_cpu
+  ecs_task_memory         = var.ecs_task_memory
+  ecs_desired_count       = var.ecs_desired_count
+  ecs_min_capacity        = var.ecs_min_capacity
+  ecs_max_capacity        = var.ecs_max_capacity
+  container_image         = var.container_image
+  mongodb_uri             = var.mongodb_uri
+  mongodb_db              = var.mongodb_db
+  whisper_model           = var.whisper_model
+  whisper_language        = var.whisper_language
+}
+

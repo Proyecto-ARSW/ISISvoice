@@ -1,45 +1,80 @@
-version: '3.8'
+version: '3.9'
 
 services:
-  voice-service:
-    build:
-      context: .
-      dockerfile: src/app/Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./src:/app/src
-      - /tmp/whisper_cache:/root/.cache/whisper
-    environment:
-      - PYTHONUNBUFFERED=1
-      - CUDA_VISIBLE_DEVICES=-1
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=medical3.1
-      - MONGODB_URI=${MONGODB_URI:-mongodb://mongo:27017}
-      - MONGODB_DB=${MONGODB_DB:-voice_medical}
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    networks:
-      - voice_network
-    depends_on:
-      - mongo
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/speech/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
+  # MongoDB database service
   mongo:
-    image: mongo:7
+    image: mongo:7-alpine
+    container_name: voice-mongo
     restart: unless-stopped
     ports:
       - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGODB_DB:-voice_medical}
     volumes:
       - mongo_data:/data/db
     networks:
       - voice_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    profiles:
+      - full
+
+  # FastAPI application service
+  api:
+    build:
+      context: .
+      dockerfile: src/app/Dockerfile
+    container_name: voice-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongo:27017}
+      - MONGODB_DB=${MONGODB_DB:-voice_medical}
+      - MONGO_SERVER_SELECTION_TIMEOUT_MS=${MONGO_SERVER_SELECTION_TIMEOUT_MS:-6000}
+      - MONGO_CONNECT_TIMEOUT_MS=${MONGO_CONNECT_TIMEOUT_MS:-6000}
+      - MONGO_SOCKET_TIMEOUT_MS=${MONGO_SOCKET_TIMEOUT_MS:-10000}
+      - MONGO_OPERATION_TIMEOUT_SECONDS=${MONGO_OPERATION_TIMEOUT_SECONDS:-2.5}
+      - MONGO_MAX_RETRIES=${MONGO_MAX_RETRIES:-1}
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-es}
+      - WHISPER_TIMEOUT_SECONDS=${WHISPER_TIMEOUT_SECONDS:-45}
+      - WHISPER_MAX_RETRIES=${WHISPER_MAX_RETRIES:-1}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-medical3.1}
+    volumes:
+      - ./src:/app/src
+      - /tmp/whisper_cache:/root/.cache/whisper
+      - ./logs:/app/logs
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - voice_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # OpenAPI documentation
+  docs:
+    image: nginx:alpine
+    container_name: voice-docs
+    ports:
+      - "8001:80"
+    volumes:
+      - ./docs:/usr/share/nginx/html:ro
+    profiles:
+      - docs
 
 networks:
   voice_network:
@@ -47,3 +82,9 @@ networks:
 
 volumes:
   mongo_data:
+    driver: local
+
+# Profiles:
+# - full: includes MongoDB
+# - docs: includes documentation server
+# Usage: docker-compose --profile full up

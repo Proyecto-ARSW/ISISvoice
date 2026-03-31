@@ -4,23 +4,29 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
-from app.routers import speech_router
+
+from app.routers import triage_router, patient_router, health_router
 from app.services.mongo_service import mongo_store
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifespan events."""
+    # Startup
+    await mongo_store.connect()
     yield
+    # Shutdown
     await mongo_store.close()
 
+
 app = FastAPI(
-    title="Voice Service API",
-    description="API para transcripción de voz en tiempo real",
-    version="2.1.0",
+    title="Voice Medical Triage Service",
+    description="Microservice for clinical triage data extraction from voice and text",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
-# Configurar CORS para permitir solicitudes desde diferentes orígenes
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,16 +35,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Incluir router de speech
-app.include_router(speech_router.router)
+# Include routers
+app.include_router(triage_router.router)
+app.include_router(patient_router.router)
+app.include_router(health_router.router)
 
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():
-    return RedirectResponse(url="/client.html")
+    """Redirect root to client.html or docs."""
+    return RedirectResponse(url="/docs")
 
-# Servir archivos estáticos (HTML, CSS, JS)
-# Buscar en el directorio padre del proyecto
+
+# Serve static files (client.html if exists)
 static_dir = Path(__file__).parent.parent.parent
 if (static_dir / "client.html").exists():
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
