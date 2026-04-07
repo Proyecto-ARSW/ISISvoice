@@ -1,15 +1,12 @@
 """Procedure service for managing triage records and vital signs."""
-from datetime import datetime
-from typing import Optional, List
-from app.models import (
-    ProcedureRecord,
-    ProcedureRecordResponse,
-    TriageRecord,
-    VitalSignsCreate,
-    Comment,
-)
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import uuid4
+
+from app.models import Comment, ProcedureRecord, TriageDataCore, VitalSignsCreate
 from app.services.mongo_service import mongo_store
-from app.services.triage_service import triage_extraction_service
 
 
 class ProcedureService:
@@ -38,10 +35,8 @@ class ProcedureService:
         Returns:
             Created procedure record
         """
-        from app.models import TriageDataCore
-        
-        now = datetime.utcnow()
-        
+        now = datetime.now(timezone.utc)
+
         procedure = ProcedureRecord(
             procedure_id=procedure_id,
             patient_cedula=patient_cedula,
@@ -54,11 +49,11 @@ class ProcedureService:
             status="triage_completed",
             comments=[],
         )
-        
+
         # Save to MongoDB
         procedure_dict = procedure.model_dump(exclude_none=True)
         await mongo_store.save_procedure(procedure_dict)
-        
+
         return procedure
 
     async def get_procedure(self, procedure_id: str) -> Optional[ProcedureRecord]:
@@ -81,7 +76,7 @@ class ProcedureService:
         self,
         cedula: str,
         limit: int = 50,
-    ) -> List[ProcedureRecord]:
+    ) -> list[ProcedureRecord]:
         """
         Get all procedures for a patient by cedula.
         
@@ -110,7 +105,7 @@ class ProcedureService:
         Returns:
             Updated procedure or None if not found
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         update_data = {
             "vital_signs": vital_signs.model_dump(exclude_none=True),
@@ -142,11 +137,12 @@ class ProcedureService:
         Returns:
             Updated procedure or None if not found
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         new_comment = Comment(
-            text=comment_text,
-            timestamp=now,
+            id=str(uuid4()),
+            comment=comment_text,
+            created_at=now,
             author=author,
         )
         
@@ -159,6 +155,15 @@ class ProcedureService:
             return None
         
         return ProcedureRecord(**updated_doc)
+
+    async def get_preliminary_history(
+        self,
+        procedure_id: str,
+    ) -> Optional[dict]:
+        procedure = await self.get_procedure(procedure_id)
+        if not procedure:
+            return None
+        return procedure.triage_data.model_dump()
 
     async def close_procedure(
         self,
@@ -177,7 +182,7 @@ class ProcedureService:
         """
         update_data = {
             "status": "closed",
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
         }
         if final_notes:
             update_data["notes"] = final_notes

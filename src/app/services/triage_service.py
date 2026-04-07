@@ -1,167 +1,243 @@
-"""Triage service for extracting clinical data from transcripts."""
-from datetime import datetime
+"""Triage service for extracting preliminary clinical history from text/audio."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
 import re
-from typing import Optional, Dict, Any
+from typing import Any
+
+import httpx
+
+from app.core.settings import settings
 from app.models import TriageDataCore
 
 
 class TriageExtractionService:
-    """Service for extracting triage data from patient transcripts."""
+    """Build structured preliminary history with deterministic fallback + Ollama."""
+
+    IA_WARNING = "Contenido generado con IA; puede contener errores."
+    CHEST_PAIN_TOKEN = "dolor toracico"
 
     @staticmethod
-    def generate_procedure_id(cedula: Optional[str]) -> str:
-        """
-        Generate unique procedure ID from cedula and timestamp.
-        Format: cedula_YYYYMMDDHHmmss
-        """
-        ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        if cedula:
-            cedula_clean = re.sub(r"\D", "", cedula)[:15]
-            return f"{cedula_clean}_{ts}"
-        return f"unknown_{ts}"
+    def generate_procedure_id(patient_id: str) -> str:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", patient_id)[:40] or "unknown"
+        return f"{cleaned}_{ts}"
 
     @staticmethod
     def _clean_text(value: Any) -> str:
-        """Clean and normalize text values."""
         if value is None:
             return ""
         text = str(value).strip()
-        if text.lower() in {"none", "null", "undefined", "nan", ""}:
+        if text.lower() in {"none", "null", "undefined", "nan"}:
             return ""
         return text
 
     @staticmethod
-    def _extract_cedula(text: str) -> Optional[str]:
-        """Extract cedula/ID number from text."""
-        # Pattern: "cédula es 1234567890" or just "1234567890"
+    def _split_items(text: str) -> list[str]:
+        normalized = re.sub(r"\s+", " ", text)
+        parts = re.split(r"[,;]|\by\b|\band\b", normalized, flags=re.IGNORECASE)
+        return [p.strip(" .") for p in parts if p.strip(" .")]
+
+    def _detect_pregnancy(self, text: str) -> bool:
+        lower = text.lower()
+        if re.search(r"\b(no\s+embarazada|no\s+estoy\s+embarazada|niega\s+embarazo)\b", lower):
+            return False
+        return bool(re.search(r"\b(embarazada|embarazo|gestante|gestacion|gestación)\b", lower))
+
+    def _extract_symptoms(self, text: str) -> list[str]:
+        lower = text.lower()
+        seeds = [
+            "fiebre",
+            "dolor de cabeza",
+            "cefalea",
+            TriageExtractionService.CHEST_PAIN_TOKEN,
+            "dolor abdominal",
+            "mareo",
+            "nauseas",
+            "vomito",
+            "disnea",
+            "tos",
+            "fatiga",
+        ]
+        found = [seed for seed in seeds if seed in lower]
+        if found:
+            return list(dict.fromkeys(found))
+
         match = re.search(
-            r"(?:cedula|cédula|identificacion|identificación|id|documento)\s*(?:es|:)?\s*([0-9]{5,20})",
+            r"(?:sintomas?|tengo|presento|siento|me\s+duele(?:n)?)\s*:?\s*(.+)$",
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
-        if match:
-            return match.group(1)
-        
-        # Fallback: look for standalone numbers
-        only_number = re.search(r"\b([0-9]{6,20})\b", text)
-        if only_number:
-            return only_number.group(1)
-        
-        return None
+        if not match:
+            return [text.strip()] if text.strip() else []
+        return self._split_items(match.group(1))
 
-    @staticmethod
-    def _extract_symptoms(text: str) -> Optional[str]:
-        """Extract primary symptoms from text."""
-        # Pattern: "me duele...", "tengo...", "me siento..."
-        patterns = [
-            r"(?:me\s+duele|me\s+duelen)\s+(.+?)(?:\.|,|$|\b(?:y|no|trauma|medicamentos?|embarazo)\b)",
-            r"(?:tengo|presento|siento)\s+(.+?)(?:\.|,|$|\b(?:y|no|trauma|medicamentos?|embarazo)\b)",
-            r"(?:motivo\s+de\s+consulta)\s*(?:es|:)?\s*(.+?)(?:\.|,|$)",
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                symptoms = TriageExtractionService._clean_text(match.group(1))
-                if symptoms:
-                    return symptoms
-        
-        return None
+    def _extract_background(self, text: str) -> list[str]:
+        match = re.search(
+            r"(?:antecedentes?|historial|padezco|sufro\s+de)\s*:?\s*(.+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+        return self._split_items(match.group(1))
 
-    @staticmethod
-    def _extract_pregnancy(text: str) -> Optional[str]:
-        """Extract pregnancy status from text."""
-        if re.search(r"\b(?:no\s+embarazada|no\s+estoy\s+embarazada|not\s+pregnant)\b", text, flags=re.IGNORECASE):
-            return "no"
-        if re.search(r"\b(?:embarazada|pregnant|gestante|estoy\s+embarazada)\b", text, flags=re.IGNORECASE):
-            return "si"
-        if re.search(r"\b(?:no\s+se|no\s+sé|desconozco|posible|podría|pueda)\b", text, flags=re.IGNORECASE):
+    def _infer_causes(self, symptoms: list[str]) -> list[str]:
+        joined = " ".join(symptoms).lower()
+        causes: list[str] = []
+        if any(k in joined for k in ["fiebre", "tos", "fatiga"]):
+            causes.append("infeccion viral")
+        if any(k in joined for k in ["mareo", "debilidad", "fatiga"]):
+            causes.append("deshidratacion")
+        if any(k in joined for k in [self.CHEST_PAIN_TOKEN, "disnea"]):
+            causes.append("evento cardiopulmonar")
+        return causes or ["requiere evaluacion clinica"]
+
+    def _priority_from_content(self, symptoms: list[str], pregnancy: bool) -> int:
+        content = " ".join(symptoms).lower()
+        if any(k in content for k in ["convulsion", "inconsciente", "paro", "infarto"]):
+            return 5
+        if any(k in content for k in [self.CHEST_PAIN_TOKEN, "disnea severa", "hemorragia"]):
+            return 4
+        if any(k in content for k in ["fiebre", "vomito", "mareo"]):
+            return 3
+        if pregnancy and any(k in content for k in ["dolor abdominal", "sangrado"]):
+            return 4
+        if symptoms:
+            return 2
+        return 1
+
+    def _build_ai_comment(self, priority: int) -> str:
+        if priority >= 5:
+            return (
+                "IA: Caso critico con riesgo vital potencial. Requiere atencion inmediata, "
+                "monitoreo continuo y activacion de protocolo de emergencia."
+            )
+        if priority == 4:
+            return (
+                "IA: Caso de alta prioridad. Debe valorarse en menos de 1 hora; "
+                "mantener paciente en observacion y control de signos vitales."
+            )
+        if priority == 3:
+            return (
+                "IA: Caso de prioridad intermedia. No parece emergencia inmediata, "
+                "pero idealmente no debe tardar mas de 3 horas en atencion. "
+                "Mientras espera, mantener hidratacion y observacion clinica."
+            )
+        if priority == 2:
+            return (
+                "IA: Caso leve-moderado. Se recomienda valoracion medica programada "
+                "y vigilancia de empeoramiento de sintomas."
+            )
+        return (
+            "IA: Caso leve sin criterios de alarma aparentes. "
+            "Se sugiere orientacion general y control ambulatorio."
+        )
+
+    async def _analyze_with_ollama(self, patient_id: str, transcript: str) -> dict[str, Any] | None:
+        if not settings.ollama_base_url or not settings.ollama_model:
             return None
-        return None
 
-    @staticmethod
-    def _extract_trauma(text: str) -> Optional[str]:
-        """Extract recent trauma information."""
-        if re.search(r"\b(?:no\s+trauma|sin\s+trauma|ningun\s+trauma|ningún\s+trauma|no\s+tuve\s+trauma)\b", text, flags=re.IGNORECASE):
-            return "no"
+        prompt = (
+            "Analiza el siguiente relato clinico y responde SOLO JSON valido con esta estructura exacta: "
+            '{"sintomas":string[],"embarazo":boolean,"antecedentes":string[],"posiblesCausas":string[],'
+            '"comentario":string,"nivelPrioridad":number,"comentariosIA":string}. '
+            "Regla: nivelPrioridad de 1 a 5. Texto: "
+            f"{transcript}"
+        )
+        payload = {
+            "model": settings.ollama_model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+        }
 
-        trauma_patterns = [
-            r"(?:trauma|accidente|golpe|caída|caida|fractura)\s*(?:en|hace|reciente)?(?:\s+(\w+))?\s*(?:dias|horas|años)?",
-            r"(?:me\s+cai|me\s+caí|me\s+golpee|me\s+golpeé)\b\s*(.+?)(?:[,\.]|$)",
-            r"(?:accidente|trauma|lesión|lesion)\s*(?::)?\s*(.+?)(?:[,\.]|$)",
-        ]
-        
-        for pattern in trauma_patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                trauma = TriageExtractionService._clean_text(
-                    match.group(1) if match.lastindex else match.group(0)
-                )
-                if trauma and trauma.lower() != "no":
-                    return trauma
-        
-        return None
+        try:
+            timeout = httpx.Timeout(settings.ollama_timeout_seconds)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
+                response.raise_for_status()
+                body = response.json()
+                raw = self._clean_text(body.get("response"))
+                if not raw:
+                    return None
+                parsed = json.loads(raw)
+                parsed["idpaciente"] = patient_id
+                return parsed
+        except Exception:
+            return None
 
-    @staticmethod
-    def _extract_justification(text: str) -> Optional[str]:
-        """Extract possible justification/context."""
-        patterns = [
-            r"(?:antecedente|antecedentes|historial|historia|previousamente|previamente)\s*(?::)?\s*(.+?)(?:[,\.]|$)",
-            r"(?:porque|por que|porqué|por lo que|debido a)\s+(.+?)(?:[,\.]|$)",
-            r"(?:tengo|padezco|sufro\s+de)\s+(?:hipertension|diabetes|asma|alergia|otras\s+enfermedades?)\b(.+?)(?:[,\.]|$)",
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                justification = TriageExtractionService._clean_text(match.group(1))
-                if justification:
-                    return justification
-        
-        return None
+    def _normalize_data(self, patient_id: str, data: dict[str, Any], transcript: str) -> TriageDataCore:
+        symptoms = data.get("sintomas") or []
+        if isinstance(symptoms, str):
+            symptoms = self._split_items(symptoms)
+        symptoms = [self._clean_text(x) for x in symptoms if self._clean_text(x)]
 
-    def extract_triage_data(self, transcript: str) -> TriageDataCore:
-        """
-        Extract triage data from a patient transcript.
-        
-        Args:
-            transcript: Patient input (voice transcription or text)
-        
-        Returns:
-            TriageDataCore with extracted data
-        """
-        text = self._clean_text(transcript)
-        
-        cedula = self._extract_cedula(text)
-        symptoms = self._extract_symptoms(text)
-        pregnancy = self._extract_pregnancy(text)
-        trauma = self._extract_trauma(text)
-        justification = self._extract_justification(text)
-        
+        antecedentes = data.get("antecedentes") or []
+        if isinstance(antecedentes, str):
+            antecedentes = self._split_items(antecedentes)
+        antecedentes = [self._clean_text(x) for x in antecedentes if self._clean_text(x)]
+
+        posibles_causas = data.get("posiblesCausas") or []
+        if isinstance(posibles_causas, str):
+            posibles_causas = self._split_items(posibles_causas)
+        posibles_causas = [self._clean_text(x) for x in posibles_causas if self._clean_text(x)]
+
+        embarazo = bool(data.get("embarazo", False))
+        nivel = int(data.get("nivelPrioridad") or 3)
+        nivel = max(1, min(5, nivel))
+
+        comentario = self._clean_text(data.get("comentario")) or transcript[:280]
+        comentarios_ia = self._clean_text(data.get("comentariosIA"))
+        if not comentarios_ia:
+            comentarios_ia = self._build_ai_comment(nivel)
+
         return TriageDataCore(
-            identification_number=cedula,
-            symptoms=symptoms,
-            pregnancy=pregnancy,
-            recent_trauma=trauma,
-            possible_justification=justification,
+            idpaciente=patient_id,
+            sintomas=symptoms,
+            embarazo=embarazo,
+            antecedentes=antecedentes,
+            posiblesCausas=posibles_causas,
+            comentario=comentario,
+            nivelPrioridad=nivel,
+            comentariosIA=comentarios_ia,
+            advertenciaIA=self.IA_WARNING,
+        )
+
+    async def extract_preliminary_history(self, patient_id: str, transcript: str) -> TriageDataCore:
+        cleaned = self._clean_text(transcript)
+        ollama_data = await self._analyze_with_ollama(patient_id, cleaned)
+        if ollama_data:
+            return self._normalize_data(patient_id, ollama_data, cleaned)
+
+        fallback_symptoms = self._extract_symptoms(cleaned)
+        fallback_background = self._extract_background(cleaned)
+        fallback_pregnancy = self._detect_pregnancy(cleaned)
+        fallback_causes = self._infer_causes(fallback_symptoms)
+        fallback_priority = self._priority_from_content(fallback_symptoms, fallback_pregnancy)
+
+        return TriageDataCore(
+            idpaciente=patient_id,
+            sintomas=fallback_symptoms,
+            embarazo=fallback_pregnancy,
+            antecedentes=fallback_background,
+            posiblesCausas=fallback_causes,
+            comentario=cleaned[:280],
+            nivelPrioridad=fallback_priority,
+            comentariosIA=self._build_ai_comment(fallback_priority),
+            advertenciaIA=self.IA_WARNING,
         )
 
     def get_confidence_score(self, triage_data: TriageDataCore) -> float:
-        """
-        Calculate extraction confidence score (0-1).
-        Higher score means more fields were successfully extracted.
-        """
         fields = [
-            triage_data.identification_number,
-            triage_data.symptoms,
-            triage_data.pregnancy,
-            triage_data.recent_trauma,
-            triage_data.possible_justification,
+            triage_data.sintomas,
+            triage_data.posiblesCausas,
+            triage_data.comentario,
+            triage_data.comentariosIA,
         ]
-        filled_count = sum(1 for f in fields if f is not None and f != "")
-        total_fields = len(fields)
-        return round(filled_count / total_fields, 2) if total_fields > 0 else 0.0
+        filled_count = sum(1 for f in fields if f)
+        return round(filled_count / len(fields), 2)
 
 
-# Singleton instance
 triage_extraction_service = TriageExtractionService()

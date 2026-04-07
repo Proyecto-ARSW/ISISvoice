@@ -11,6 +11,8 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 class Settings:
     def __init__(self) -> None:
+        self.jwt_secret = os.getenv("JWT_SECRET", "")
+        self.jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model = os.getenv("OLLAMA_MODEL", "medical3.1")
         self.ollama_timeout_seconds = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "12"))

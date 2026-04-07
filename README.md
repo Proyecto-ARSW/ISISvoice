@@ -141,6 +141,8 @@ Recomendado a futuro:
 2. Inicio:
 
 - Ejecuta: ./start.sh
+- Windows (PowerShell):
+  - `python -m uvicorn app.main:app --app-dir src --reload --port 8000`
 
 3. Verificacion rapida:
 - http://localhost:8000/speech/health
