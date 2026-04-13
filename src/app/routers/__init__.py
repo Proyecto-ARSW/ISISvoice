@@ -1,5 +1,5 @@
 """API routers package."""
 
-from app.routers import triage_router, patient_router, health_router
+from app.routers import triage_router, health_router, speech_router
 
-__all__ = ["triage_router", "patient_router", "health_router"]
+__all__ = ["triage_router", "health_router", "speech_router"]

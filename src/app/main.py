@@ -5,7 +5,7 @@ from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from app.routers import triage_router, patient_router, health_router, speech_router
+from app.routers import triage_router, health_router, speech_router
 from app.services.mongo_service import mongo_store
 
 
@@ -37,7 +37,6 @@ app.add_middleware(
 
 # Include routers
 app.include_router(triage_router.router)
-app.include_router(patient_router.router)
 app.include_router(health_router.router)
 app.include_router(speech_router.router)
 
