@@ -32,15 +32,13 @@ install_packages_ubuntu() {
 install_packages_amazon() {
   if command -v dnf >/dev/null 2>&1; then
     dnf update -y
-    dnf install -y curl git ffmpeg
+    dnf install -y curl git
   else
     yum update -y
     yum install -y curl git
-    if ! command -v ffmpeg >/dev/null 2>&1; then
-      echo -e "${YELLOW}ffmpeg no esta disponible por defecto en esta distro.${NC}"
-      echo -e "${YELLOW}Si el contenedor Whisper lo requiere, instalalo manualmente o usa una AMI con ffmpeg.${NC}"
-    fi
   fi
+
+  echo -e "${YELLOW}ffmpeg no se instala en el host Amazon Linux; el contenedor Whisper ya lo incluye.${NC}"
 }
 
 install_docker_ubuntu() {
