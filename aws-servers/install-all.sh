@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ISISvoice AWS Setup - Whisper + Ollama en misma EC2
-# Ejecutar en Ubuntu 22.04 LTS
+# Compatible con Ubuntu y Amazon Linux
 
 set -e
 
@@ -22,18 +22,97 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+SUDO_USER_NAME="${SUDO_USER:-ec2-user}"
+
+install_packages_ubuntu() {
+  apt-get update && apt-get upgrade -y
+  apt-get install -y ca-certificates curl gnupg git ffmpeg
+}
+
+install_packages_amazon() {
+  if command -v dnf >/dev/null 2>&1; then
+    dnf update -y
+    dnf install -y curl git ffmpeg
+  else
+    yum update -y
+    yum install -y curl git
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+      echo -e "${YELLOW}ffmpeg no esta disponible por defecto en esta distro.${NC}"
+      echo -e "${YELLOW}Si el contenedor Whisper lo requiere, instalalo manualmente o usa una AMI con ffmpeg.${NC}"
+    fi
+  fi
+}
+
+install_docker_ubuntu() {
+  if ! command -v docker >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sh get-docker.sh
+  fi
+
+  if ! docker compose version >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y docker-compose-plugin
+  fi
+}
+
+install_docker_amazon() {
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y docker docker-compose-plugin
+  else
+    if command -v amazon-linux-extras >/dev/null 2>&1; then
+      amazon-linux-extras install docker -y
+    fi
+    yum install -y docker
+    yum install -y docker-compose-plugin || true
+  fi
+
+  systemctl enable docker
+  systemctl start docker
+}
+
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then
+    echo "docker compose"
+  else
+    echo "docker-compose"
+  fi
+}
+
+compose_exec() {
+  local cmd
+  cmd=$(compose_cmd)
+  $cmd "$@"
+}
+
+ensure_directory() {
+  mkdir -p /opt/isisvoice/models/{whisper,ollama}
+  chown -R "$SUDO_USER_NAME":"$SUDO_USER_NAME" /opt/isisvoice 2>/dev/null || true
+}
+
 # Step 1: Update system
 echo -e "${YELLOW}[1/6] Updating system...${NC}"
-apt-get update && apt-get upgrade -y
+if [ -f /etc/os-release ] && grep -qiE 'amzn|amazon' /etc/os-release; then
+  install_packages_amazon
+  OS_FAMILY="amazon"
+else
+  install_packages_ubuntu
+  OS_FAMILY="ubuntu"
+fi
 echo -e "${GREEN}✓ System updated${NC}"
 echo ""
 
 # Step 2: Install Docker
 echo -e "${YELLOW}[2/6] Installing Docker...${NC}"
 if ! command -v docker &> /dev/null; then
-  curl -fsSL https://get.docker.com -o get-docker.sh
-  sh get-docker.sh
-  usermod -aG docker ubuntu
+  if [ "$OS_FAMILY" = "amazon" ]; then
+    install_docker_amazon
+  else
+    install_docker_ubuntu
+  fi
+
+  if id "$SUDO_USER_NAME" >/dev/null 2>&1; then
+    usermod -aG docker "$SUDO_USER_NAME" || true
+  fi
   echo -e "${GREEN}✓ Docker installed${NC}"
 else
   echo -e "${GREEN}✓ Docker already installed${NC}"
@@ -42,18 +121,31 @@ echo ""
 
 # Step 3: Install Docker Compose
 echo -e "${YELLOW}[3/6] Installing Docker Compose...${NC}"
-if ! command -v docker-compose &> /dev/null; then
-  curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
-  echo -e "${GREEN}✓ Docker Compose installed${NC}"
+if docker compose version &> /dev/null; then
+  echo -e "${GREEN}✓ Docker Compose plugin already installed${NC}"
 else
-  echo -e "${GREEN}✓ Docker Compose already installed${NC}"
+  if [ "$OS_FAMILY" = "amazon" ]; then
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y docker-compose-plugin || true
+    else
+      yum install -y docker-compose-plugin || true
+    fi
+  else
+    apt-get update
+    apt-get install -y docker-compose-plugin
+  fi
+
+  if docker compose version &> /dev/null; then
+    echo -e "${GREEN}✓ Docker Compose installed${NC}"
+  else
+    echo -e "${YELLOW}Docker Compose plugin not available, using docker-compose if present.${NC}"
+  fi
 fi
 echo ""
 
 # Step 4: Create directories
 echo -e "${YELLOW}[4/6] Creating directory structure...${NC}"
-mkdir -p /opt/isisvoice/models/{whisper,ollama}
+ensure_directory
 cd /opt/isisvoice
 echo -e "${GREEN}✓ Directories created${NC}"
 echo ""
@@ -200,16 +292,22 @@ echo ""
 
 # Step 7: Build and start services
 echo -e "${YELLOW}Building and starting services...${NC}"
-docker-compose build
-docker-compose up -d
+COMPOSE_CMD=$(compose_cmd)
+$COMPOSE_CMD build
+$COMPOSE_CMD up -d
+
+# Step 8: Pull Ollama model
+echo -e "${YELLOW}Pulling Ollama model (medical3.1)...${NC}"
+if $COMPOSE_CMD ps ollama >/dev/null 2>&1; then
+  $COMPOSE_CMD exec -T ollama ollama pull medical3.1 &
+else
+  echo -e "${YELLOW}Ollama container not ready yet; pull it manually with:${NC}"
+  echo "  $COMPOSE_CMD exec -T ollama ollama pull medical3.1"
+fi
 
 # Wait for services to start
 echo -e "${YELLOW}Waiting for services to initialize...${NC}"
 sleep 30
-
-# Step 8: Pull Ollama model
-echo -e "${YELLOW}Pulling Ollama model (medical3.1)...${NC}"
-docker-compose exec -T ollama ollama pull medical3.1 &
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
@@ -227,11 +325,11 @@ curl -s http://localhost:11434/api/tags | grep -q "medical3.1" && echo -e "${GRE
 
 echo ""
 echo "📝 Logs:"
-echo "  Whisper: docker logs -f whisper"
-echo "  Ollama: docker logs -f ollama"
+echo "  Whisper: $COMPOSE_CMD logs -f whisper"
+echo "  Ollama: $COMPOSE_CMD logs -f ollama"
 echo ""
-echo "🛑 To stop services: docker-compose down"
-echo "🔄 To restart: docker-compose restart"
+echo "🛑 To stop services: $COMPOSE_CMD down"
+echo "🔄 To restart: $COMPOSE_CMD restart"
 echo ""
 echo "Working directory: /opt/isisvoice"
 echo ""
