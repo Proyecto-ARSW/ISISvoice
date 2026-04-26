@@ -30,14 +30,17 @@ install_packages_ubuntu() {
 }
 
 install_packages_amazon() {
-  if command -v dnf >/dev/null 2>&1; then
-    dnf update -y
-    dnf install -y curl git
-  else
-    yum update -y
-    yum install -y curl git
+  # Avoid dnf/yum system-wide upgrade here: on Amazon Linux 2023 it can try to
+  # replace curl-minimal with curl and fail due to conflicting packages.
+  if ! command -v git >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y git --allowerasing
+    else
+      yum install -y git
+    fi
   fi
 
+  echo -e "${YELLOW}curl no se reinstala en el host Amazon Linux para evitar conflicto con curl-minimal.${NC}"
   echo -e "${YELLOW}ffmpeg no se instala en el host Amazon Linux; el contenedor Whisper ya lo incluye.${NC}"
 }
 
