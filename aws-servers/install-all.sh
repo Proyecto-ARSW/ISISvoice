@@ -178,7 +178,8 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - WHISPER_MODEL=large-v3
+      - WHISPER_MODEL=small
+      - WHISPER_COMPUTE_TYPE=int8
       - PORT=8001
       - HOST=0.0.0.0
     volumes:
@@ -234,7 +235,7 @@ import os
 import tempfile
 
 import uvicorn
-import whisper
+from faster_whisper import WhisperModel
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -243,7 +244,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Whisper API", version="1.0")
 
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3")
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "small")
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 model = None
 
 
@@ -256,8 +258,8 @@ class TranscriptionRequest(BaseModel):
 @app.on_event("startup")
 async def startup_event():
   global model
-  logger.info(f"Loading Whisper model: {MODEL_SIZE}")
-  model = whisper.load_model(MODEL_SIZE)
+  logger.info(f"Loading Whisper model: {MODEL_SIZE} ({COMPUTE_TYPE})")
+  model = WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
 
 
 @app.get("/health")
@@ -288,10 +290,11 @@ async def transcribe(request: TranscriptionRequest):
       temp_path,
       language=request.language,
       verbose=False,
-      fp16=False,
     )
+    segments, _ = result
+    text = "".join(segment.text for segment in segments).strip()
     return {
-      "transcription": result.get("text", "").strip(),
+      "transcription": text,
       "language": request.language,
       "model": MODEL_SIZE,
     }
@@ -318,7 +321,7 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-    openai-whisper \
+  faster-whisper \
     fastapi uvicorn[standard] \
     python-multipart pydantic
 
@@ -337,12 +340,12 @@ $COMPOSE_CMD build
 $COMPOSE_CMD up -d
 
 # Step 8: Pull Ollama model
-echo -e "${YELLOW}Pulling Ollama model (medical3.1)...${NC}"
+echo -e "${YELLOW}Pulling Ollama model (medgemma:4b)...${NC}"
 if $COMPOSE_CMD ps ollama >/dev/null 2>&1; then
-  $COMPOSE_CMD exec -T ollama ollama pull medical3.1 &
+  $COMPOSE_CMD exec -T ollama ollama pull medgemma:4b &
 else
   echo -e "${YELLOW}Ollama container not ready yet; pull it manually with:${NC}"
-  echo "  $COMPOSE_CMD exec -T ollama ollama pull medical3.1"
+  echo "  $COMPOSE_CMD exec -T ollama ollama pull medgemma:4b"
 fi
 
 # Wait for services to start
@@ -361,7 +364,7 @@ echo ""
 
 echo -e "${YELLOW}Testing services...${NC}"
 curl -s http://localhost:8001/health && echo -e "${GREEN}✓ Whisper OK${NC}" || echo -e "${RED}✗ Whisper not ready yet${NC}"
-curl -s http://localhost:11434/api/tags | grep -q "medical3.1" && echo -e "${GREEN}✓ Ollama OK${NC}" || echo -e "${YELLOW}⏳ Ollama loading model...${NC}"
+curl -s http://localhost:11434/api/tags | grep -q "medgemma:4b" && echo -e "${GREEN}✓ Ollama OK${NC}" || echo -e "${YELLOW}⏳ Ollama loading model...${NC}"
 
 echo ""
 echo "📝 Logs:"

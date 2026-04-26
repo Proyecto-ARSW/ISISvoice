@@ -17,7 +17,7 @@ class Settings:
         # ========== Remote AWS Endpoints ==========
         # Ollama: IP/hostname of AWS instance running Ollama
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.ollama_model = os.getenv("OLLAMA_MODEL", "medical3.1")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "medgemma:4b")
         self.ollama_timeout_seconds = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "12"))
         self.ollama_max_retries = int(os.getenv("OLLAMA_MAX_RETRIES", "1"))
         self.ollama_chat_format = os.getenv("OLLAMA_CHAT_FORMAT", "")
