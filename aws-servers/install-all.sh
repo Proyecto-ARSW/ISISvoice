@@ -168,8 +168,6 @@ echo ""
 # Step 5: Download docker-compose.yml
 echo -e "${YELLOW}[5/6] Downloading Docker Compose configuration...${NC}"
 cat > docker-compose.yml << 'EOF'
-version: '3.8'
-
 services:
   whisper:
     image: whisper-api:latest
@@ -229,6 +227,87 @@ echo ""
 
 # Step 6: Download Dockerfile.whisper
 echo -e "${YELLOW}[6/6] Downloading Dockerfile for Whisper...${NC}"
+cat > server.py << 'EOF'
+import base64
+import logging
+import os
+import tempfile
+
+import uvicorn
+import whisper
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Whisper API", version="1.0")
+
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3")
+model = None
+
+
+class TranscriptionRequest(BaseModel):
+  audio_base64: str
+  language: str = "es"
+  file_name: str = "audio.wav"
+
+
+@app.on_event("startup")
+async def startup_event():
+  global model
+  logger.info(f"Loading Whisper model: {MODEL_SIZE}")
+  model = whisper.load_model(MODEL_SIZE)
+
+
+@app.get("/health")
+async def health_check():
+  return {
+    "status": "healthy",
+    "service": "whisper-api",
+    "model": MODEL_SIZE,
+    "version": "1.0",
+  }
+
+
+@app.post("/transcribe")
+async def transcribe(request: TranscriptionRequest):
+  if not model:
+    raise HTTPException(status_code=503, detail="Model not loaded")
+  if not request.audio_base64:
+    raise HTTPException(status_code=400, detail="No audio data")
+
+  temp_path = None
+  try:
+    audio_bytes = base64.b64decode(request.audio_base64)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+      tmp.write(audio_bytes)
+      temp_path = tmp.name
+
+    result = model.transcribe(
+      temp_path,
+      language=request.language,
+      verbose=False,
+      fp16=False,
+    )
+    return {
+      "transcription": result.get("text", "").strip(),
+      "language": request.language,
+      "model": MODEL_SIZE,
+    }
+  except Exception as e:
+    logger.error(f"Error: {str(e)}")
+    raise HTTPException(status_code=500, detail=str(e))
+  finally:
+    if temp_path and os.path.exists(temp_path):
+      os.remove(temp_path)
+
+
+if __name__ == "__main__":
+  port = int(os.getenv("PORT", 8001))
+  uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
+EOF
+
 cat > Dockerfile.whisper << 'EOF'
 FROM python:3.11-slim
 
@@ -243,61 +322,7 @@ RUN pip install --no-cache-dir \
     fastapi uvicorn[standard] \
     python-multipart pydantic
 
-RUN cat > /app/server.py << 'PYEOF'
-import base64, logging, tempfile, os
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import whisper, uvicorn
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Whisper API", version="1.0")
-
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3")
-model = None
-
-class TranscriptionRequest(BaseModel):
-    audio_base64: str
-    language: str = "es"
-    file_name: str = "audio.wav"
-
-@app.on_event("startup")
-async def startup_event():
-    global model
-    logger.info(f"Loading Whisper model: {MODEL_SIZE}")
-    model = whisper.load_model(MODEL_SIZE)
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "service": "whisper-api", "model": MODEL_SIZE, "version": "1.0"}
-
-@app.post("/transcribe")
-async def transcribe(request: TranscriptionRequest):
-    if not model:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    if not request.audio_base64:
-        raise HTTPException(status_code=400, detail="No audio data")
-    
-    temp_path = None
-    try:
-        audio_bytes = base64.b64decode(request.audio_base64)
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            tmp.write(audio_bytes)
-            temp_path = tmp.name
-        result = model.transcribe(temp_path, language=request.language, verbose=False, fp16=False)
-        return {"transcription": result.get('text', '').strip(), "language": request.language, "model": MODEL_SIZE}
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8001))
-    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
-PYEOF
+COPY server.py /app/server.py
 
 EXPOSE 8001
 CMD ["python", "/app/server.py"]
