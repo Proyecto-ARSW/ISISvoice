@@ -58,17 +58,35 @@ install_docker_ubuntu() {
 
 install_docker_amazon() {
   if command -v dnf >/dev/null 2>&1; then
-    dnf install -y docker docker-compose-plugin
+    dnf install -y docker
   else
     if command -v amazon-linux-extras >/dev/null 2>&1; then
       amazon-linux-extras install docker -y
     fi
     yum install -y docker
-    yum install -y docker-compose-plugin || true
   fi
 
   systemctl enable docker
   systemctl start docker
+}
+
+install_compose_binary() {
+  local arch
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64) arch="x86_64" ;;
+    aarch64 | arm64) arch="aarch64" ;;
+    *) arch="x86_64" ;;
+  esac
+
+  local compose_version="v2.32.4"
+  local target_dir="/usr/local/lib/docker/cli-plugins"
+  local target_file="$target_dir/docker-compose"
+
+  mkdir -p "$target_dir"
+  curl -L "https://github.com/docker/compose/releases/download/${compose_version}/docker-compose-linux-${arch}" -o "$target_file"
+  chmod +x "$target_file"
+  ln -sf "$target_file" /usr/local/bin/docker-compose
 }
 
 compose_cmd() {
@@ -126,11 +144,7 @@ if docker compose version &> /dev/null; then
   echo -e "${GREEN}✓ Docker Compose plugin already installed${NC}"
 else
   if [ "$OS_FAMILY" = "amazon" ]; then
-    if command -v dnf >/dev/null 2>&1; then
-      dnf install -y docker-compose-plugin || true
-    else
-      yum install -y docker-compose-plugin || true
-    fi
+    install_compose_binary
   else
     apt-get update
     apt-get install -y docker-compose-plugin
