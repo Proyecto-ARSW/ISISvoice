@@ -1,10 +1,12 @@
 """Health check endpoints."""
 from typing import Literal
+
+import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.core.settings import settings
 from app.services.mongo_service import mongo_store
-from app.services.speech_service import model as whisper_model
 
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
@@ -40,12 +42,19 @@ async def health_check() -> HealthResponse:
     if mongo_health.get("status") != "healthy":
         overall_status = "degraded"
     
-    # Check Whisper (just verify it's loaded)
+    # Check remote Whisper service
     try:
-        whisper_status = "loaded" if whisper_model is not None else "not_loaded"
-        dependencies["whisper"] = {"status": whisper_status}
+        timeout = httpx.Timeout(4.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{settings.whisper_api_url}/health")
+            response.raise_for_status()
+        dependencies["whisper"] = {"status": "reachable", "url": settings.whisper_api_url}
     except Exception as e:
-        dependencies["whisper"] = {"status": "error", "error": str(e)}
+        dependencies["whisper"] = {
+            "status": "unreachable",
+            "url": settings.whisper_api_url,
+            "error": str(e),
+        }
         overall_status = "degraded"
     
     return HealthResponse(

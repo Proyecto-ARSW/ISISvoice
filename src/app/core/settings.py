@@ -46,5 +46,10 @@ class Settings:
         self.queue_max_size = int(os.getenv("SESSION_QUEUE_MAX_SIZE", "32"))
         self.max_history_messages = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
 
+        # Webhook for finalized triage payloads
+        self.triage_api_url = os.getenv("TRIAGE_API_URL", "")
+        self.triage_api_key = os.getenv("TRIAGE_API_KEY", "")
+        self.triage_webhook_timeout_seconds = float(os.getenv("TRIAGE_WEBHOOK_TIMEOUT_SECONDS", "10"))
+
 
 settings = Settings()

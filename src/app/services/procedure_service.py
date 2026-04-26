@@ -7,15 +7,29 @@ from uuid import uuid4
 
 from app.models import Comment, ProcedureRecord, TriageDataCore, VitalSignsCreate
 from app.services.mongo_service import mongo_store
+from app.services.webhook_service import webhook_service
 
 
 class ProcedureService:
     """Service for managing complete procedure records."""
 
+    @staticmethod
+    def _normalize_procedure_doc(doc: dict) -> dict:
+        normalized = dict(doc)
+        if "patient_id" not in normalized and "patient_cedula" in normalized:
+            normalized["patient_id"] = normalized.pop("patient_cedula")
+
+        triage_payload = normalized.get("triage_data") or normalized.get("preliminary_history") or {}
+        if isinstance(triage_payload, dict):
+            triage_payload.pop("idpaciente", None)
+            normalized["triage_data"] = triage_payload
+
+        return normalized
+
     async def create_triage_record(
         self,
         procedure_id: str,
-        patient_cedula: str,
+        patient_id: str,
         transcript: str,
         input_type: str,
         triage_data_dict: dict,
@@ -25,8 +39,8 @@ class ProcedureService:
         Create a new procedure record with triage data.
         
         Args:
-            procedure_id: Unique procedure ID (cedula_timestamp)
-            patient_cedula: Patient cedula
+            procedure_id: Unique procedure ID
+            patient_id: Patient identifier from JWT
             transcript: Original transcript/input
             input_type: 'voice' or 'text'
             triage_data_dict: Extracted triage data
@@ -36,15 +50,17 @@ class ProcedureService:
             Created procedure record
         """
         now = datetime.now(timezone.utc)
+        clean_triage_data = dict(triage_data_dict)
+        clean_triage_data.pop("idpaciente", None)
 
         procedure = ProcedureRecord(
             procedure_id=procedure_id,
-            patient_cedula=patient_cedula,
+            patient_id=patient_id,
             created_at=now,
             updated_at=now,
             transcript=transcript,
             input_type=input_type,
-            triage_data=TriageDataCore(**triage_data_dict),
+            triage_data=TriageDataCore(**clean_triage_data),
             confidence_score=confidence_score,
             status="triage_completed",
             comments=[],
@@ -69,26 +85,26 @@ class ProcedureService:
         proc_doc = await mongo_store.get_procedure(procedure_id)
         if not proc_doc:
             return None
-        
-        return ProcedureRecord(**proc_doc)
 
-    async def get_procedures_by_cedula(
+        return ProcedureRecord(**self._normalize_procedure_doc(proc_doc))
+
+    async def get_procedures_by_patient_id(
         self,
-        cedula: str,
+        patient_id: str,
         limit: int = 50,
     ) -> list[ProcedureRecord]:
         """
-        Get all procedures for a patient by cedula.
+        Get all procedures for a patient by identifier from JWT.
         
         Args:
-            cedula: Patient cedula
+            patient_id: Patient identifier
             limit: Maximum procedures to return
         
         Returns:
             List of procedures
         """
-        procedures = await mongo_store.get_procedures_by_cedula(cedula, limit=limit)
-        return [ProcedureRecord(**p) for p in procedures]
+        procedures = await mongo_store.get_procedures_by_patient_id(patient_id, limit=limit)
+        return [ProcedureRecord(**self._normalize_procedure_doc(p)) for p in procedures]
 
     async def add_vital_signs(
         self,
@@ -117,8 +133,8 @@ class ProcedureService:
         updated_doc = await mongo_store.update_procedure(procedure_id, update_data)
         if not updated_doc:
             return None
-        
-        return ProcedureRecord(**updated_doc)
+
+        return ProcedureRecord(**self._normalize_procedure_doc(updated_doc))
 
     async def add_comment(
         self,
@@ -153,8 +169,8 @@ class ProcedureService:
         )
         if not updated_doc:
             return None
-        
-        return ProcedureRecord(**updated_doc)
+
+        return ProcedureRecord(**self._normalize_procedure_doc(updated_doc))
 
     async def get_preliminary_history(
         self,
@@ -190,8 +206,17 @@ class ProcedureService:
         updated_doc = await mongo_store.update_procedure(procedure_id, update_data)
         if not updated_doc:
             return None
-        
-        return ProcedureRecord(**updated_doc)
+
+        return ProcedureRecord(**self._normalize_procedure_doc(updated_doc))
+
+    async def send_to_webhook(self, procedure_id: str) -> str:
+        """Send sanitized triage payload to external webhook as final step."""
+        procedure = await self.get_procedure(procedure_id)
+        if not procedure:
+            return "not_found"
+
+        webhook_result = await webhook_service.send_triage_result(procedure)
+        return webhook_result.get("status", "error")
 
 
 procedure_service = ProcedureService()

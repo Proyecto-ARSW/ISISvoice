@@ -117,13 +117,13 @@ async def ingest_symptoms_text(
     if not transcript:
         raise HTTPException(status_code=400, detail="text_input es obligatorio")
 
-    triage_data = await triage_extraction_service.extract_preliminary_history(user.user_id, transcript)
+    triage_data = await triage_extraction_service.extract_preliminary_history(transcript)
     confidence = triage_extraction_service.get_confidence_score(triage_data)
     procedure_id = triage_extraction_service.generate_procedure_id(user.user_id)
 
     await procedure_service.create_triage_record(
         procedure_id=procedure_id,
-        patient_cedula=user.user_id,
+        patient_id=user.user_id,
         transcript=transcript,
         input_type="text",
         triage_data_dict=triage_data.model_dump(),
@@ -162,13 +162,13 @@ async def ingest_symptoms_audio_base64(
     if not transcript or len(transcript.strip()) < 5:
         raise HTTPException(status_code=400, detail="No fue posible obtener texto util desde el audio")
 
-    triage_data = await triage_extraction_service.extract_preliminary_history(user.user_id, transcript)
+    triage_data = await triage_extraction_service.extract_preliminary_history(transcript)
     confidence = triage_extraction_service.get_confidence_score(triage_data)
     procedure_id = triage_extraction_service.generate_procedure_id(user.user_id)
 
     await procedure_service.create_triage_record(
         procedure_id=procedure_id,
-        patient_cedula=user.user_id,
+        patient_id=user.user_id,
         transcript=transcript,
         input_type="audio",
         triage_data_dict=triage_data.model_dump(),
@@ -199,13 +199,13 @@ async def ingest_symptoms_audio(
     if not transcript or len(transcript.strip()) < 5:
         raise HTTPException(status_code=400, detail="No fue posible obtener texto util desde el audio")
 
-    triage_data = await triage_extraction_service.extract_preliminary_history(user.user_id, transcript)
+    triage_data = await triage_extraction_service.extract_preliminary_history(transcript)
     confidence = triage_extraction_service.get_confidence_score(triage_data)
     procedure_id = triage_extraction_service.generate_procedure_id(user.user_id)
 
     await procedure_service.create_triage_record(
         procedure_id=procedure_id,
-        patient_cedula=user.user_id,
+        patient_id=user.user_id,
         transcript=transcript,
         input_type="audio",
         triage_data_dict=triage_data.model_dump(),
@@ -236,7 +236,13 @@ async def update_vital_signs(
     procedure = await procedure_service.add_vital_signs(procedure_id, vital_signs)
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
-    return ProcedureRecordResponse(**procedure.model_dump())
+
+    webhook_delivery = await procedure_service.send_to_webhook(procedure_id)
+    refreshed = await procedure_service.get_procedure(procedure_id)
+    if not refreshed:
+        raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
+
+    return ProcedureRecordResponse.from_procedure(refreshed, webhook_delivery=webhook_delivery)
 
 
 @router.get(
@@ -254,7 +260,7 @@ async def get_preliminary_history(
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
 
-    _ensure_patient_access(user, procedure.patient_cedula)
+    _ensure_patient_access(user, procedure.patient_id)
     return procedure.triage_data
 
 
@@ -273,8 +279,8 @@ async def get_procedure(
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
 
-    _ensure_patient_access(user, procedure.patient_cedula)
-    return ProcedureRecordResponse(**procedure.model_dump())
+    _ensure_patient_access(user, procedure.patient_id)
+    return ProcedureRecordResponse.from_procedure(procedure)
 
 
 @router.get(
@@ -285,8 +291,8 @@ async def get_my_procedures(
     user: Annotated[AuthUser, Depends(require_roles(JwtRole.PACIENTE))],
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> list[ProcedureRecordResponse]:
-    procedures = await procedure_service.get_procedures_by_cedula(user.user_id, limit=limit)
-    return [ProcedureRecordResponse(**procedure.model_dump()) for procedure in procedures]
+    procedures = await procedure_service.get_procedures_by_patient_id(user.user_id, limit=limit)
+    return [ProcedureRecordResponse.from_procedure(procedure) for procedure in procedures]
 
 
 @router.post(
@@ -305,4 +311,4 @@ async def add_procedure_comment(
     )
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
-    return ProcedureRecordResponse(**procedure.model_dump())
+    return ProcedureRecordResponse.from_procedure(procedure)

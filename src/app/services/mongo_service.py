@@ -86,8 +86,10 @@ class MongoStore:
             # Procedure records collection indexes
             procedures_col = self._db.triage_records
             await procedures_col.create_index("procedure_id", unique=True)
+            await procedures_col.create_index("patient_id")
             await procedures_col.create_index("patient_cedula")
             await procedures_col.create_index("created_at")
+            await procedures_col.create_index([("patient_id", 1), ("created_at", -1)])
             await procedures_col.create_index([("patient_cedula", 1), ("created_at", -1)])
             
         except Exception as e:
@@ -250,16 +252,16 @@ class MongoStore:
             pass
         return self._buffered_procedures.get(procedure_id)
 
-    async def get_procedures_by_cedula(
+    async def get_procedures_by_patient_id(
         self,
-        cedula: str,
+        patient_id: str,
         limit: int = 50
     ) -> List[dict[str, Any]]:
         """
         Get all procedures for a patient.
         
         Args:
-            cedula: Patient cedula
+            patient_id: Patient identifier from JWT
             limit: Maximum results
         
         Returns:
@@ -270,7 +272,7 @@ class MongoStore:
             await self.connect()
             procedures = self._db.triage_records
             cursor = (
-                procedures.find({"patient_cedula": cedula})
+                procedures.find({"$or": [{"patient_id": patient_id}, {"patient_cedula": patient_id}]})
                 .sort("created_at", -1)
                 .limit(limit)
             )
@@ -281,11 +283,17 @@ class MongoStore:
 
         if not docs and self._buffered_procedures:
             buffered = [
-                p for p in self._buffered_procedures.values() if p.get("patient_cedula") == cedula
+                p
+                for p in self._buffered_procedures.values()
+                if p.get("patient_id") == patient_id or p.get("patient_cedula") == patient_id
             ]
             docs = self._safe_sort_desc(buffered, "created_at")[:limit]
 
         return docs
+
+    async def get_procedures_by_cedula(self, cedula: str, limit: int = 50) -> List[dict[str, Any]]:
+        """Backward compatible wrapper; use get_procedures_by_patient_id."""
+        return await self.get_procedures_by_patient_id(cedula, limit=limit)
 
     async def update_procedure(
         self,

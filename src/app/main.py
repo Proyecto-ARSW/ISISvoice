@@ -4,16 +4,23 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
+import logging
 
 from app.routers import triage_router, health_router, speech_router
 from app.services.mongo_service import mongo_store
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
-    await mongo_store.connect()
+    try:
+        await mongo_store.connect()
+    except Exception as exc:
+        # Keep API available even if MongoDB is temporarily unreachable.
+        logger.warning("MongoDB unavailable at startup, running in degraded mode: %s", exc)
     yield
     # Shutdown
     await mongo_store.close()

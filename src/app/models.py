@@ -48,7 +48,6 @@ class PatientResponse(BaseModel):
 
 
 class TriageDataCore(BaseModel):
-    idpaciente: str
     sintomas: list[str] = Field(default_factory=list)
     embarazo: bool = False
     antecedentes: list[str] = Field(default_factory=list)
@@ -79,7 +78,7 @@ class Comment(BaseModel):
 
 class ProcedureRecord(BaseModel):
     procedure_id: str
-    patient_cedula: str
+    patient_id: str
     transcript: str
     input_type: Literal["text", "audio"]
     triage_data: TriageDataCore
@@ -93,20 +92,42 @@ class ProcedureRecord(BaseModel):
 
 class ProcedureRecordResponse(BaseModel):
     procedure_id: str
-    patient_cedula: str
+    patient_id: str
     transcript: str
     input_type: Literal["text", "audio"]
-    triage_data: TriageDataCore
+    preliminary_history: TriageDataCore
     confidence_score: float
     status: str
     vital_signs: VitalSignsCreate | None = None
     comments: list[Comment] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    webhook_delivery: str | None = None
+
+    @classmethod
+    def from_procedure(
+        cls,
+        procedure: "ProcedureRecord",
+        webhook_delivery: str | None = None,
+    ) -> "ProcedureRecordResponse":
+        return cls(
+            procedure_id=procedure.procedure_id,
+            patient_id=procedure.patient_id,
+            transcript=procedure.transcript,
+            input_type=procedure.input_type,
+            preliminary_history=procedure.triage_data,
+            confidence_score=procedure.confidence_score,
+            status=procedure.status,
+            vital_signs=procedure.vital_signs,
+            comments=procedure.comments,
+            created_at=procedure.created_at,
+            updated_at=procedure.updated_at,
+            webhook_delivery=webhook_delivery,
+        )
 
 
 class TriageRecordResponse(BaseModel):
     procedure_id: str
-    patient_cedula: str
+    patient_id: str
     triage_data: TriageDataCore
     status: str
