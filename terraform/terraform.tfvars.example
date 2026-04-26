@@ -1,0 +1,51 @@
+# ====================
+# Azure Configuration
+# ====================
+location              = "eastus"
+resource_group_name   = "rg-isisvoice-prod"
+environment           = "production"
+container_registry_name = "isisvoiceacr"  # MUST BE UNIQUE - change to your value
+
+# ====================
+# Container Image
+# ====================
+# Build and push your image to ACR first, then set this
+# Example: isisvoiceacr.azurecr.io/isisvoice:latest
+isisvoice_image = "your-registry.azurecr.io/isisvoice:latest"
+
+# ====================
+# Autoscaling
+# ====================
+min_replicas = 0  # Scale to zero when idle
+max_replicas = 3
+
+# ====================
+# AWS Endpoints (Whisper & Ollama)
+# ====================
+# Replace with your actual AWS instance IPs/hostnames
+whisper_api_url = "http://YOUR_WHISPER_AWS_IP:8001"
+ollama_base_url = "http://YOUR_OLLAMA_AWS_IP:11434"
+
+# ====================
+# Whisper Configuration
+# ====================
+whisper_model    = "large-v3"
+whisper_language = "es"
+
+# ====================
+# Ollama Configuration
+# ====================
+ollama_model = "medical3.1"
+
+# ====================
+# MongoDB Atlas
+# ====================
+# Your existing MongoDB URI
+mongodb_uri = "mongodb+srv://username:password@cluster.mongodb.net/?appName=SITI"
+mongodb_db  = "voice_medical"
+
+# ====================
+# JWT Secret
+# ====================
+# Use your existing JWT secret
+jwt_secret = "ASCLEPIO_ARSW-SECRET-2026-PROYECTO-HOSPITALARIO-CORE"

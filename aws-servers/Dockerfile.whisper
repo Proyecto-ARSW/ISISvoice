@@ -1,0 +1,101 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    openai-whisper \
+    fastapi \
+    uvicorn[standard] \
+    python-multipart \
+    pydantic
+
+# Create whisper server code
+RUN cat > /app/server.py << 'EOF'
+import base64
+import logging
+import tempfile
+import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import whisper
+import uvicorn
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Whisper API", version="1.0")
+
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3")
+model = None
+
+class TranscriptionRequest(BaseModel):
+    audio_base64: str
+    language: str = "es"
+    file_name: str = "audio.wav"
+
+@app.on_event("startup")
+async def startup_event():
+    global model
+    logger.info(f"Loading Whisper model: {MODEL_SIZE}")
+    model = whisper.load_model(MODEL_SIZE)
+    logger.info(f"✓ Model {MODEL_SIZE} loaded")
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "whisper-api",
+        "model": MODEL_SIZE,
+        "version": "1.0"
+    }
+
+@app.post("/transcribe")
+async def transcribe(request: TranscriptionRequest):
+    if not model:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    if not request.audio_base64:
+        raise HTTPException(status_code=400, detail="No audio data provided")
+    
+    temp_path = None
+    try:
+        audio_bytes = base64.b64decode(request.audio_base64)
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            tmp.write(audio_bytes)
+            temp_path = tmp.name
+        
+        result = model.transcribe(
+            temp_path,
+            language=request.language,
+            verbose=False,
+            fp16=False
+        )
+        
+        return {
+            "transcription": result.get('text', '').strip(),
+            "language": request.language,
+            "model": MODEL_SIZE
+        }
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8001))
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
+EOF
+
+EXPOSE 8001
+
+CMD ["python", "/app/server.py"]

@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Whisper API Server - ASR (puerto 8001)
+  whisper:
+    image: whisper-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.whisper
+    container_name: whisper
+    ports:
+      - "8001:8001"
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - PORT=8001
+      - HOST=0.0.0.0
+    volumes:
+      - ./models/whisper:/root/.cache/whisper
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - isisvoice
+
+  # Ollama Server - LLM (puerto 11434)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_MODELS=/data/ollama/models
+      - OLLAMA_NUM_GPU=0  # CPU only (GPU available si deseas)
+    volumes:
+      - ./models/ollama:/data/ollama/models
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - isisvoice
+
+networks:
+  isisvoice:
+    driver: bridge
+
+volumes:
+  ollama-data:
+    driver: local

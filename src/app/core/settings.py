@@ -13,12 +13,18 @@ class Settings:
     def __init__(self) -> None:
         self.jwt_secret = os.getenv("JWT_SECRET", "")
         self.jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
+        
+        # ========== Remote AWS Endpoints ==========
+        # Ollama: IP/hostname of AWS instance running Ollama
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model = os.getenv("OLLAMA_MODEL", "medical3.1")
         self.ollama_timeout_seconds = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "12"))
         self.ollama_max_retries = int(os.getenv("OLLAMA_MAX_RETRIES", "1"))
         self.ollama_chat_format = os.getenv("OLLAMA_CHAT_FORMAT", "")
         self.ollama_final_format = os.getenv("OLLAMA_FINAL_FORMAT", "")
+        
+        # Whisper: IP/hostname of AWS instance running Whisper API
+        self.whisper_api_url = os.getenv("WHISPER_API_URL", "http://localhost:8001")
         self.whisper_model = os.getenv("WHISPER_MODEL", "large-v3")
         self.whisper_language = os.getenv("WHISPER_LANGUAGE", "es")
         self.whisper_timeout_seconds = float(os.getenv("WHISPER_TIMEOUT_SECONDS", "45"))
