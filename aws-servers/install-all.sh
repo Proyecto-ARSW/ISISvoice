@@ -23,6 +23,16 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 SUDO_USER_NAME="${SUDO_USER:-ec2-user}"
+WHISPER_IMAGE="${WHISPER_IMAGE:-}"
+
+require_whisper_image() {
+  if [ -z "$WHISPER_IMAGE" ]; then
+    echo -e "${RED}WHISPER_IMAGE is required for remote deploy.${NC}"
+    echo "Example:"
+    echo "  export WHISPER_IMAGE=ghcr.io/<owner>/isisvoice-whisper:cpu-latest"
+    exit 1
+  fi
+}
 
 install_packages_ubuntu() {
   apt-get update && apt-get upgrade -y
@@ -170,10 +180,7 @@ echo -e "${YELLOW}[5/6] Downloading Docker Compose configuration...${NC}"
 cat > docker-compose.yml << 'EOF'
 services:
   whisper:
-    image: whisper-api:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.whisper
+    image: ${WHISPER_IMAGE}
     container_name: whisper
     ports:
       - "8001:8001"
@@ -226,117 +233,16 @@ EOF
 echo -e "${GREEN}✓ Configuration downloaded${NC}"
 echo ""
 
-# Step 6: Download Dockerfile.whisper
-echo -e "${YELLOW}[6/6] Downloading Dockerfile for Whisper...${NC}"
-cat > server.py << 'EOF'
-import base64
-import logging
-import os
-import tempfile
-
-import uvicorn
-from faster_whisper import WhisperModel
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Whisper API", version="1.0")
-
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "small")
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-model = None
-
-
-class TranscriptionRequest(BaseModel):
-  audio_base64: str
-  language: str = "es"
-  file_name: str = "audio.wav"
-
-
-@app.on_event("startup")
-async def startup_event():
-  global model
-  logger.info(f"Loading Whisper model: {MODEL_SIZE} ({COMPUTE_TYPE})")
-  model = WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
-
-
-@app.get("/health")
-async def health_check():
-  return {
-    "status": "healthy",
-    "service": "whisper-api",
-    "model": MODEL_SIZE,
-    "version": "1.0",
-  }
-
-
-@app.post("/transcribe")
-async def transcribe(request: TranscriptionRequest):
-  if not model:
-    raise HTTPException(status_code=503, detail="Model not loaded")
-  if not request.audio_base64:
-    raise HTTPException(status_code=400, detail="No audio data")
-
-  temp_path = None
-  try:
-    audio_bytes = base64.b64decode(request.audio_base64)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-      tmp.write(audio_bytes)
-      temp_path = tmp.name
-
-    result = model.transcribe(
-      temp_path,
-      language=request.language,
-      verbose=False,
-    )
-    segments, _ = result
-    text = "".join(segment.text for segment in segments).strip()
-    return {
-      "transcription": text,
-      "language": request.language,
-      "model": MODEL_SIZE,
-    }
-  except Exception as e:
-    logger.error(f"Error: {str(e)}")
-    raise HTTPException(status_code=500, detail=str(e))
-  finally:
-    if temp_path and os.path.exists(temp_path):
-      os.remove(temp_path)
-
-
-if __name__ == "__main__":
-  port = int(os.getenv("PORT", 8001))
-  uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
-EOF
-
-cat > Dockerfile.whisper << 'EOF'
-FROM python:3.11-slim
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y \
-    ffmpeg curl && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \
-  faster-whisper \
-    fastapi uvicorn[standard] \
-    python-multipart pydantic
-
-COPY server.py /app/server.py
-
-EXPOSE 8001
-CMD ["python", "/app/server.py"]
-EOF
-echo -e "${GREEN}✓ Dockerfile created${NC}"
+# Step 6: Pull Whisper image
+echo -e "${YELLOW}[6/6] Pulling Whisper image...${NC}"
+require_whisper_image
+docker pull "$WHISPER_IMAGE"
+echo -e "${GREEN}✓ Whisper image downloaded (${WHISPER_IMAGE})${NC}"
 echo ""
 
-# Step 7: Build and start services
-echo -e "${YELLOW}Building and starting services...${NC}"
+# Start services
+echo -e "${YELLOW}Starting services...${NC}"
 COMPOSE_CMD=$(compose_cmd)
-$COMPOSE_CMD build
 $COMPOSE_CMD up -d
 
 # Step 8: Pull Ollama model

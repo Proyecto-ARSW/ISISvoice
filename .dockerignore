@@ -36,3 +36,4 @@ README.md
 docker-compose.yml
 client.html
 client_websocket.py
+!client.html

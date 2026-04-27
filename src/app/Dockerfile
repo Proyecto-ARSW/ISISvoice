@@ -1,7 +1,7 @@
 # Multi-stage build for Voice Medical Triage Service
 
 # Stage 1: Dependencies builder
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
@@ -41,7 +41,6 @@ COPY --from=builder /root/.local /root/.local
 
 # Copy application files (from context root)
 COPY src/ /app/src/
-COPY client.html /app/client.html
 COPY .env.example /app/.env.example
 
 # Create application user for security
