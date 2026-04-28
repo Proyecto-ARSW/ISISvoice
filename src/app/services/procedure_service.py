@@ -142,9 +142,13 @@ class ProcedureService:
             webhook_delivery="pending",
         )
 
-        # Save to MongoDB
         procedure_dict = procedure.model_dump(exclude_none=True, by_alias=True)
         await mongo_store.save_procedure(procedure_dict)
+
+        webhook_status, _ = await self._deliver_webhook(procedure)
+        if webhook_status != procedure.webhook_delivery:
+            await mongo_store.update_procedure(procedure_id, {"webhook_delivery": webhook_status})
+            procedure.webhook_delivery = webhook_status
 
         return procedure
 

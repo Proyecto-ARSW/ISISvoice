@@ -45,6 +45,10 @@ class CommentRequest(BaseModel):
     comment: str = Field(..., min_length=1, max_length=1000)
 
 
+class CloseProcedureRequest(BaseModel):
+    close_reason: Optional[str] = None
+
+
 class TriageIntakeResponse(BaseModel):
     procedure_id: str
     patient_id: str
@@ -329,6 +333,24 @@ async def add_procedure_comment(
         procedure_id,
         request.comment,
         user.role,
+    )
+    if not procedure:
+        raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
+    return ProcedureRecordResponse(**procedure.model_dump())
+
+
+@router.post(
+    "/record/{procedure_id}/close",
+    responses={404: {"description": "Procedimiento no encontrado"}, 403: {"description": "Sin permisos"}},
+)
+async def close_procedure(
+    procedure_id: str,
+    request: CloseProcedureRequest,
+    _: Annotated[AuthUser, Depends(require_roles(JwtRole.MEDICO, JwtRole.ENFERMERO))],
+) -> ProcedureRecordResponse:
+    procedure = await procedure_service.close_procedure(
+        procedure_id,
+        final_notes=request.close_reason,
     )
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")

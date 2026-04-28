@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import re
+import unicodedata
 from typing import Any
 
 import httpx
@@ -34,19 +35,27 @@ class TriageExtractionService:
         return text
 
     @staticmethod
+    def _strip_accents(text: str) -> str:
+        """Normalize accented characters for matching (e.g. torácico → toracico)."""
+        return "".join(
+            c for c in unicodedata.normalize("NFKD", text)
+            if not unicodedata.combining(c)
+        )
+
+    @staticmethod
     def _split_items(text: str) -> list[str]:
         normalized = re.sub(r"\s+", " ", text)
         parts = re.split(r"[,;]|\by\b|\band\b", normalized, flags=re.IGNORECASE)
         return [p.strip(" .") for p in parts if p.strip(" .")]
 
     def _detect_pregnancy(self, text: str) -> bool:
-        lower = text.lower()
-        if re.search(r"\b(no\s+embarazada|no\s+estoy\s+embarazada|niega\s+embarazo)\b", lower):
+        normalized = self._strip_accents(text).lower()
+        if re.search(r"\b(no\s+embarazada|no\s+estoy\s+embarazada|niega\s+embarazo)\b", normalized):
             return False
-        return bool(re.search(r"\b(embarazada|embarazo|gestante|gestacion|gestación)\b", lower))
+        return bool(re.search(r"\b(embarazada|embarazo|gestante|gestacion)\b", normalized))
 
     def _extract_symptoms(self, text: str) -> list[str]:
-        lower = text.lower()
+        normalized = self._strip_accents(text).lower()
         seeds = [
             "fiebre",
             "dolor de cabeza",
@@ -60,7 +69,7 @@ class TriageExtractionService:
             "tos",
             "fatiga",
         ]
-        found = [seed for seed in seeds if seed in lower]
+        found = [seed for seed in seeds if seed in normalized]
         if found:
             return list(dict.fromkeys(found))
 
@@ -95,26 +104,28 @@ class TriageExtractionService:
         return causes or ["requiere evaluacion clinica"]
 
     def _priority_from_content(self, symptoms: list[str], pregnancy: bool) -> int:
-        content = " ".join(symptoms).lower()
+        # Manchester triage scale: N1=Critico (red), N5=No urgente (blue)
+        content = self._strip_accents(" ".join(symptoms)).lower()
         if any(k in content for k in ["convulsion", "inconsciente", "paro", "infarto"]):
-            return 5
+            return 1  # N1 Critico
         if any(k in content for k in [self.CHEST_PAIN_TOKEN, "disnea severa", "hemorragia"]):
-            return 4
-        if any(k in content for k in ["fiebre", "vomito", "mareo"]):
-            return 3
+            return 2  # N2 Muy urgente
         if pregnancy and any(k in content for k in ["dolor abdominal", "sangrado"]):
-            return 4
+            return 2  # N2 Muy urgente
+        if any(k in content for k in ["fiebre", "vomito", "mareo"]):
+            return 3  # N3 Urgente
         if symptoms:
-            return 2
-        return 1
+            return 4  # N4 Poco urgente
+        return 5  # N5 No urgente
 
     def _build_ai_comment(self, priority: int) -> str:
-        if priority >= 5:
+        # N1=Critico, N2=Muy urgente, N3=Urgente, N4=Poco urgente, N5=No urgente
+        if priority == 1:
             return (
                 "IA: Caso critico con riesgo vital potencial. Requiere atencion inmediata, "
                 "monitoreo continuo y activacion de protocolo de emergencia."
             )
-        if priority == 4:
+        if priority == 2:
             return (
                 "IA: Caso de alta prioridad. Debe valorarse en menos de 1 hora; "
                 "mantener paciente en observacion y control de signos vitales."
@@ -125,7 +136,7 @@ class TriageExtractionService:
                 "pero idealmente no debe tardar mas de 3 horas en atencion. "
                 "Mientras espera, mantener hidratacion y observacion clinica."
             )
-        if priority == 2:
+        if priority == 4:
             return (
                 "IA: Caso leve-moderado. Se recomienda valoracion medica programada "
                 "y vigilancia de empeoramiento de sintomas."
@@ -143,7 +154,7 @@ class TriageExtractionService:
             "Analiza el siguiente relato clinico y responde SOLO JSON valido con esta estructura exacta: "
             '{"sintomas":string[],"embarazo":boolean,"antecedentes":string[],"posiblesCausas":string[],'
             '"comentario":string,"nivelPrioridad":number,"comentariosIA":string}. '
-            "Regla: nivelPrioridad de 1 a 5. Texto: "
+            "Regla: nivelPrioridad escala Manchester 1-5 donde 1=critico/emergencia y 5=no urgente. Texto: "
             f"{transcript}"
         )
         payload = {
@@ -203,34 +214,35 @@ class TriageExtractionService:
         )
 
     def build_recommendation(self, triage_data: TriageDataCore) -> str:
+        # N1=Critico, N2=Muy urgente, N3=Urgente, N4=Poco urgente, N5=No urgente
         symptoms = triage_data.sintomas or []
         causes = triage_data.posiblesCausas or []
         priority = triage_data.nivelPrioridad
         symptom_text = ", ".join(symptoms) if symptoms else "malestar no especificado"
         cause_text = ", ".join(causes) if causes else "requiere evaluacion clinica"
 
-        if priority >= 5:
+        if priority == 1:
             return (
-                "Prioridad 5: atencion inmediata. Traslada al paciente a area critica y activa protocolo de emergencia. "
-                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
-            )
-        if priority == 4:
-            return (
-                "Prioridad 4: valoracion prioritaria en menos de 1 hora. Mantener monitorizacion y control de signos vitales. "
-                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
-            )
-        if priority == 3:
-            return (
-                "Prioridad 3: evaluacion pronta, idealmente en las proximas horas. Vigilar evolucion y reforzar signos de alarma. "
+                "N1 (Critico): atencion inmediata. Traslada al paciente a area critica y activa protocolo de emergencia. "
                 f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
             )
         if priority == 2:
             return (
-                "Prioridad 2: cuadro leve a moderado, sin criterios de alarma inmediatos. Indicar observacion y reevaluacion si empeora. "
+                "N2 (Muy urgente): valoracion prioritaria en menos de 1 hora. Mantener monitorizacion y control de signos vitales. "
+                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
+            )
+        if priority == 3:
+            return (
+                "N3 (Urgente): evaluacion pronta, idealmente en las proximas horas. Vigilar evolucion y reforzar signos de alarma. "
+                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
+            )
+        if priority == 4:
+            return (
+                "N4 (Poco urgente): cuadro leve a moderado, sin criterios de alarma inmediatos. Indicar observacion y reevaluacion si empeora. "
                 f"Hallazgos principales: {symptom_text}."
             )
         return (
-            "Prioridad 1: orientacion ambulatoria y seguimiento si los sintomas persisten. "
+            "N5 (No urgente): orientacion ambulatoria y seguimiento si los sintomas persisten. "
             f"Hallazgos principales: {symptom_text}."
         )
 
