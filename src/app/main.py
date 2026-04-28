@@ -1,22 +1,22 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+
 from app.routers import triage_router, health_router, speech_router
 from app.services.mongo_service import mongo_store
+
+_CLIENT_HTML = Path(__file__).parent.parent.parent / "client.html"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
-    # Startup
     await mongo_store.connect()
     yield
-    # Shutdown
-    mongo_store.close()
+    await mongo_store.close()
 
 
 app = FastAPI(
@@ -43,11 +43,12 @@ app.include_router(speech_router.router)
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():
-    """Redirect root to client.html or docs."""
     return RedirectResponse(url="/docs")
 
 
-# Serve static files (client.html if exists)
-static_dir = Path(__file__).parent.parent.parent
-if (static_dir / "client.html").exists():
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+@app.get("/client.html", include_in_schema=False)
+async def serve_client():
+    """Serve the dev client at a fixed path — does not shadow API routes."""
+    if _CLIENT_HTML.exists():
+        return FileResponse(_CLIENT_HTML)
+    return RedirectResponse(url="/docs")
