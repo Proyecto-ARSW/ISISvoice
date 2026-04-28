@@ -25,7 +25,7 @@ class TriageTextRequest(BaseModel):
 
 
 class TriageAudioBase64Request(BaseModel):
-    audio_base64: str = Field(..., min_length=16)
+    audio_base64: str = Field(..., min_length=1)
     file_name: Optional[str] = None
     mime_type: Optional[str] = None
 
@@ -48,11 +48,12 @@ class CommentRequest(BaseModel):
 class TriageIntakeResponse(BaseModel):
     procedure_id: str
     patient_id: str
-    transcript: str
-    input_type: str
-    preliminary_history: TriageDataCore
-    confidence_score: float
     status: str
+    recommendation: str
+
+
+class TriageListResponse(BaseModel):
+    items: list[ProcedureRecordResponse]
 
 
 def _get_body_value(payload: dict[str, Any], *keys: str) -> Any:
@@ -117,13 +118,13 @@ async def ingest_symptoms_text(
     if not transcript:
         raise HTTPException(status_code=400, detail="text_input es obligatorio")
 
-    triage_data = await triage_extraction_service.extract_preliminary_history(user.user_id, transcript)
+    triage_data = await triage_extraction_service.extract_preliminary_history(transcript)
     confidence = triage_extraction_service.get_confidence_score(triage_data)
     procedure_id = triage_extraction_service.generate_procedure_id(user.user_id)
 
     await procedure_service.create_triage_record(
         procedure_id=procedure_id,
-        patient_cedula=user.user_id,
+        patient_id=user.user_id,
         transcript=transcript,
         input_type="text",
         triage_data_dict=triage_data.model_dump(),
@@ -133,11 +134,8 @@ async def ingest_symptoms_text(
     return TriageIntakeResponse(
         procedure_id=procedure_id,
         patient_id=user.user_id,
-        transcript=transcript,
-        input_type="text",
-        preliminary_history=triage_data,
-        confidence_score=confidence,
-        status="triage_completed",
+        status="pending",
+        recommendation=triage_extraction_service.build_recommendation(triage_data),
     )
 
 
@@ -162,13 +160,13 @@ async def ingest_symptoms_audio_base64(
     if not transcript or len(transcript.strip()) < 5:
         raise HTTPException(status_code=400, detail="No fue posible obtener texto util desde el audio")
 
-    triage_data = await triage_extraction_service.extract_preliminary_history(user.user_id, transcript)
+    triage_data = await triage_extraction_service.extract_preliminary_history(transcript)
     confidence = triage_extraction_service.get_confidence_score(triage_data)
     procedure_id = triage_extraction_service.generate_procedure_id(user.user_id)
 
     await procedure_service.create_triage_record(
         procedure_id=procedure_id,
-        patient_cedula=user.user_id,
+        patient_id=user.user_id,
         transcript=transcript,
         input_type="audio",
         triage_data_dict=triage_data.model_dump(),
@@ -178,11 +176,8 @@ async def ingest_symptoms_audio_base64(
     return TriageIntakeResponse(
         procedure_id=procedure_id,
         patient_id=user.user_id,
-        transcript=transcript,
-        input_type="audio",
-        preliminary_history=triage_data,
-        confidence_score=confidence,
-        status="triage_completed",
+        status="pending",
+        recommendation=triage_extraction_service.build_recommendation(triage_data),
     )
 
 
@@ -199,13 +194,13 @@ async def ingest_symptoms_audio(
     if not transcript or len(transcript.strip()) < 5:
         raise HTTPException(status_code=400, detail="No fue posible obtener texto util desde el audio")
 
-    triage_data = await triage_extraction_service.extract_preliminary_history(user.user_id, transcript)
+    triage_data = await triage_extraction_service.extract_preliminary_history(transcript)
     confidence = triage_extraction_service.get_confidence_score(triage_data)
     procedure_id = triage_extraction_service.generate_procedure_id(user.user_id)
 
     await procedure_service.create_triage_record(
         procedure_id=procedure_id,
-        patient_cedula=user.user_id,
+        patient_id=user.user_id,
         transcript=transcript,
         input_type="audio",
         triage_data_dict=triage_data.model_dump(),
@@ -215,11 +210,8 @@ async def ingest_symptoms_audio(
     return TriageIntakeResponse(
         procedure_id=procedure_id,
         patient_id=user.user_id,
-        transcript=transcript,
-        input_type="audio",
-        preliminary_history=triage_data,
-        confidence_score=confidence,
-        status="triage_completed",
+        status="pending",
+        recommendation=triage_extraction_service.build_recommendation(triage_data),
     )
 
 
@@ -254,8 +246,8 @@ async def get_preliminary_history(
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
 
-    _ensure_patient_access(user, procedure.patient_cedula)
-    return procedure.triage_data
+    _ensure_patient_access(user, procedure.patient_id)
+    return procedure.preliminary_history
 
 
 @router.get(
@@ -273,20 +265,55 @@ async def get_procedure(
     if not procedure:
         raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
 
-    _ensure_patient_access(user, procedure.patient_cedula)
+    _ensure_patient_access(user, procedure.patient_id)
     return ProcedureRecordResponse(**procedure.model_dump())
+
+
+@router.get(
+    "/procedures/my",
+    responses={401: {"description": "No autenticado"}},
+)
+async def get_my_procedures(
+    user: Annotated[AuthUser, Depends(require_roles(JwtRole.PACIENTE))],
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> TriageListResponse:
+    procedures = await procedure_service.get_patient_procedures(user.user_id, limit=limit)
+    return TriageListResponse(
+        items=[ProcedureRecordResponse(**procedure.model_dump()) for procedure in procedures],
+    )
 
 
 @router.get(
     "/procedures/me",
     responses={401: {"description": "No autenticado"}},
 )
-async def get_my_procedures(
+async def get_my_procedures_legacy(
     user: Annotated[AuthUser, Depends(require_roles(JwtRole.PACIENTE))],
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
-) -> list[ProcedureRecordResponse]:
-    procedures = await procedure_service.get_procedures_by_cedula(user.user_id, limit=limit)
-    return [ProcedureRecordResponse(**procedure.model_dump()) for procedure in procedures]
+) -> TriageListResponse:
+    procedures = await procedure_service.get_patient_procedures(user.user_id, limit=limit)
+    return TriageListResponse(
+        items=[ProcedureRecordResponse(**procedure.model_dump()) for procedure in procedures],
+    )
+
+
+@router.get(
+    "/records",
+    responses={401: {"description": "No autenticado"}},
+)
+async def list_triage_records(
+    user: Annotated[AuthUser, Depends(require_roles(JwtRole.ENFERMERO, JwtRole.MEDICO, JwtRole.ADMIN))],
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    status: Annotated[str | None, Query()] = None,
+) -> TriageListResponse:
+    if status is not None and status not in {"pending", "resolved", "closed", "vital_signs_recorded", "all"}:
+        raise HTTPException(status_code=400, detail="status invalido")
+
+    effective_status = None if status in {None, "all"} else status
+    records = await procedure_service.list_procedures(limit=limit, status=effective_status)
+    return TriageListResponse(
+        items=[ProcedureRecordResponse(**record.model_dump()) for record in records],
+    )
 
 
 @router.post(

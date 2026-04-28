@@ -8,6 +8,8 @@ from uuid import uuid4
 
 router = APIRouter(prefix="/speech", tags=["speech"])
 
+EMPTY_UPLOAD_ERROR = "Uploaded file is empty"
+
 
 class ClinicalStartRequest(BaseModel):
     session_id: str | None = None
@@ -19,7 +21,6 @@ class ClinicalAIRequest(BaseModel):
 
 
 class StructuredClinicalData(BaseModel):
-    identification_number: str | None = Field(default=None, description="Numero de cedula o identificacion")
     symptoms: str | None = Field(default=None, description="Sintomas principales")
     current_medications: str | None = Field(default=None, description="Medicamentos actuales o 'no'")
     pregnancy: str | None = Field(default=None, description="'si', 'no' o null")
@@ -86,7 +87,7 @@ async def transcribe_file(file: UploadFile = File(...)):
     try:
         content = await file.read()
         if not content:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+            raise HTTPException(status_code=400, detail=EMPTY_UPLOAD_ERROR)
 
         text = transcribe_audio_bytes(content, original_filename=file.filename)
         return {
@@ -111,9 +112,8 @@ async def clinical_start(payload: ClinicalStartRequest):
     return {
         "status": "session-started",
         "session_id": session_id,
-        "assistant_reply": "Iniciemos historia clinica. Indica numero de identificacion del paciente y sintomas principales.",
+        "assistant_reply": "Iniciemos historia clinica. Cuéntame tu condicion o sintomas principales.",
         "clinical_data": {
-            "identification_number": None,
             "symptoms": None,
             "current_medications": None,
             "pregnancy": None,
@@ -139,7 +139,7 @@ async def clinical_audio(
     """
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        raise HTTPException(status_code=400, detail=EMPTY_UPLOAD_ERROR)
 
     transcript = transcribe_audio_bytes(content, original_filename=file.filename)
     if transcript.startswith("[Error"):
@@ -203,7 +203,7 @@ async def flow_audio(
     """
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        raise HTTPException(status_code=400, detail=EMPTY_UPLOAD_ERROR)
 
     transcript = transcribe_audio_bytes(content, original_filename=file.filename)
     if transcript.startswith("[Error"):

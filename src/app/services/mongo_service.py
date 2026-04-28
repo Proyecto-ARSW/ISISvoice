@@ -57,13 +57,13 @@ class MongoStore:
 
         if self._buffered_patients:
             patients = self._db.patients_info
-            for cedula, patient_doc in list(self._buffered_patients.items()):
+            for cedula, patient_doc in tuple(self._buffered_patients.items()):
                 await patients.replace_one({"_id": cedula}, patient_doc, upsert=True)
                 self._buffered_patients.pop(cedula, None)
 
         if self._buffered_procedures:
             procedures = self._db.triage_records
-            for procedure_id, procedure_doc in list(self._buffered_procedures.items()):
+            for procedure_id, procedure_doc in tuple(self._buffered_procedures.items()):
                 await procedures.replace_one(
                     {"procedure_id": procedure_id},
                     procedure_doc,
@@ -89,12 +89,14 @@ class MongoStore:
             await procedures_col.create_index("patient_cedula")
             await procedures_col.create_index("created_at")
             await procedures_col.create_index([("patient_cedula", 1), ("created_at", -1)])
+            await procedures_col.create_index("status")
+            await procedures_col.create_index([("status", 1), ("updated_at", -1)])
             
-        except Exception as e:
+        except Exception:
             # Indexes might already exist, that's fine
             pass
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """Close MongoDB connection."""
         if self._client is not None:
             self._client.close()
@@ -284,6 +286,33 @@ class MongoStore:
                 p for p in self._buffered_procedures.values() if p.get("patient_cedula") == cedula
             ]
             docs = self._safe_sort_desc(buffered, "created_at")[:limit]
+
+        return docs
+
+    async def list_procedures(
+        self,
+        limit: int = 100,
+        status: str | None = None,
+    ) -> List[dict[str, Any]]:
+        docs: list[dict[str, Any]] = []
+        query: dict[str, Any] = {}
+        if status:
+            query["status"] = status
+
+        try:
+            await self.connect()
+            procedures = self._db.triage_records
+            cursor = procedures.find(query).sort("updated_at", -1).limit(limit)
+            async for doc in cursor:
+                docs.append(doc)
+        except Exception:
+            docs = []
+
+        if not docs and self._buffered_procedures:
+            buffered = list(self._buffered_procedures.values())
+            if status:
+                buffered = [doc for doc in buffered if doc.get("status") == status]
+            docs = self._safe_sort_desc(buffered, "updated_at")[:limit]
 
         return docs
 

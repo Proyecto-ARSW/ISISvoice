@@ -5,17 +5,108 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+import httpx
+
+from app.core.settings import settings
 from app.models import Comment, ProcedureRecord, TriageDataCore, VitalSignsCreate
 from app.services.mongo_service import mongo_store
+from app.services.triage_service import triage_extraction_service
 
 
 class ProcedureService:
     """Service for managing complete procedure records."""
 
+    def _build_webhook_payload(
+        self,
+        procedure: ProcedureRecord,
+        webhook_delivery: str,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        preliminary_history = procedure.preliminary_history.model_dump()
+        vital_signs = procedure.vital_signs.model_dump(exclude_none=True) if procedure.vital_signs else {
+            "temperature_c": 0,
+            "heart_rate_bpm": 0,
+            "respiratory_rate_bpm": 0,
+            "systolic_bp_mmhg": 0,
+            "diastolic_bp_mmhg": 0,
+            "oxygen_saturation_pct": 0,
+            "weight_kg": 0,
+            "height_cm": 0,
+        }
+
+        return {
+            "procedure_id": procedure.procedure_id,
+            "patient_id": procedure.patient_id,
+            "transcript": procedure.transcript,
+            "input_type": procedure.input_type,
+            "preliminary_history": {
+                "sintomas": preliminary_history.get("sintomas", []),
+                "embarazo": preliminary_history.get("embarazo", False),
+                "antecedentes": preliminary_history.get("antecedentes", []),
+                "posiblesCausas": preliminary_history.get("posiblesCausas", []),
+                "comentario": preliminary_history.get("comentario", ""),
+                "nivelPrioridad": preliminary_history.get("nivelPrioridad", 3),
+                "comentariosIA": preliminary_history.get("comentariosIA", ""),
+                "advertenciaIA": preliminary_history.get(
+                    "advertenciaIA",
+                    triage_extraction_service.IA_WARNING,
+                ),
+            },
+            "confidence_score": procedure.confidence_score,
+            "status": procedure.status,
+            "vital_signs": {
+                "temperature_c": vital_signs.get("temperature_c", 0),
+                "heart_rate_bpm": vital_signs.get("heart_rate_bpm", 0),
+                "respiratory_rate_bpm": vital_signs.get("respiratory_rate_bpm", 0),
+                "systolic_bp_mmhg": vital_signs.get("systolic_bp_mmhg", 0),
+                "diastolic_bp_mmhg": vital_signs.get("diastolic_bp_mmhg", 0),
+                "oxygen_saturation_pct": vital_signs.get("oxygen_saturation_pct", 0),
+                "weight_kg": vital_signs.get("weight_kg", 0),
+                "height_cm": vital_signs.get("height_cm", 0),
+            },
+            "comments": [
+                {
+                    "id": comment.id,
+                    "comment": comment.comment,
+                    "author": comment.author,
+                    "created_at": comment.created_at.isoformat(),
+                }
+                for comment in procedure.comments
+            ],
+            "created_at": procedure.created_at.isoformat(),
+            "updated_at": now.isoformat(),
+            "webhook_delivery": webhook_delivery,
+        }
+
+    async def _deliver_webhook(self, procedure: ProcedureRecord) -> tuple[str, str]:
+        if not settings.triage_webhook_url:
+            return "skipped", "TRIAGE_WEBHOOK_URL no configurada"
+
+        payload = self._build_webhook_payload(procedure, "pending")
+        headers = {"Content-Type": "application/json"}
+        if settings.triage_webhook_token:
+            headers["Authorization"] = f"Bearer {settings.triage_webhook_token}"
+
+        timeout = httpx.Timeout(settings.triage_webhook_timeout_seconds)
+        retries = max(0, settings.triage_webhook_max_retries)
+        last_error = ""
+
+        for attempt in range(retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(settings.triage_webhook_url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    return "sent", f"HTTP {response.status_code}"
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < retries:
+                    continue
+        return "failed", last_error or "Unknown webhook error"
+
     async def create_triage_record(
         self,
         procedure_id: str,
-        patient_cedula: str,
+        patient_id: str,
         transcript: str,
         input_type: str,
         triage_data_dict: dict,
@@ -39,19 +130,20 @@ class ProcedureService:
 
         procedure = ProcedureRecord(
             procedure_id=procedure_id,
-            patient_cedula=patient_cedula,
+            patient_id=patient_id,
             created_at=now,
             updated_at=now,
             transcript=transcript,
             input_type=input_type,
-            triage_data=TriageDataCore(**triage_data_dict),
+            preliminary_history=TriageDataCore(**triage_data_dict),
             confidence_score=confidence_score,
-            status="triage_completed",
+            status="pending",
             comments=[],
+            webhook_delivery="pending",
         )
 
         # Save to MongoDB
-        procedure_dict = procedure.model_dump(exclude_none=True)
+        procedure_dict = procedure.model_dump(exclude_none=True, by_alias=True)
         await mongo_store.save_procedure(procedure_dict)
 
         return procedure
@@ -90,6 +182,13 @@ class ProcedureService:
         procedures = await mongo_store.get_procedures_by_cedula(cedula, limit=limit)
         return [ProcedureRecord(**p) for p in procedures]
 
+    async def get_patient_procedures(
+        self,
+        patient_id: str,
+        limit: int = 50,
+    ) -> list[ProcedureRecord]:
+        return await self.get_procedures_by_cedula(patient_id, limit=limit)
+
     async def add_vital_signs(
         self,
         procedure_id: str,
@@ -111,14 +210,27 @@ class ProcedureService:
             "vital_signs": vital_signs.model_dump(exclude_none=True),
             "vital_signs_timestamp": now,
             "updated_at": now,
-            "status": "vital_signs_recorded",
+            "status": "resolved",
+            "webhook_delivery": "pending",
         }
         
         updated_doc = await mongo_store.update_procedure(procedure_id, update_data)
         if not updated_doc:
             return None
-        
-        return ProcedureRecord(**updated_doc)
+
+        procedure = ProcedureRecord(**updated_doc)
+        webhook_status, _ = await self._deliver_webhook(procedure)
+        final_update = {
+            "webhook_delivery": webhook_status,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        final_doc = await mongo_store.update_procedure(procedure_id, final_update)
+        if final_doc:
+            final_doc["webhook_delivery"] = webhook_status
+            return ProcedureRecord(**final_doc)
+
+        procedure.webhook_delivery = webhook_status
+        return procedure
 
     async def add_comment(
         self,
@@ -156,6 +268,14 @@ class ProcedureService:
         
         return ProcedureRecord(**updated_doc)
 
+    async def list_procedures(
+        self,
+        limit: int = 100,
+        status: Optional[str] = None,
+    ) -> list[ProcedureRecord]:
+        docs = await mongo_store.list_procedures(limit=limit, status=status)
+        return [ProcedureRecord(**doc) for doc in docs]
+
     async def get_preliminary_history(
         self,
         procedure_id: str,
@@ -163,7 +283,7 @@ class ProcedureService:
         procedure = await self.get_procedure(procedure_id)
         if not procedure:
             return None
-        return procedure.triage_data.model_dump()
+        return procedure.preliminary_history.model_dump()
 
     async def close_procedure(
         self,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PatientCreate(BaseModel):
@@ -48,7 +48,6 @@ class PatientResponse(BaseModel):
 
 
 class TriageDataCore(BaseModel):
-    idpaciente: str
     sintomas: list[str] = Field(default_factory=list)
     embarazo: bool = False
     antecedentes: list[str] = Field(default_factory=list)
@@ -78,35 +77,39 @@ class Comment(BaseModel):
 
 
 class ProcedureRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     procedure_id: str
-    patient_cedula: str
+    patient_id: str = Field(alias="patient_cedula")
     transcript: str
     input_type: Literal["text", "audio"]
-    triage_data: TriageDataCore
+    preliminary_history: TriageDataCore = Field(alias="triage_data")
     confidence_score: float
-    status: str = "triage_completed"
+    status: str = "pending"
     vital_signs: VitalSignsCreate | None = None
     comments: list[Comment] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    webhook_delivery: str = "pending"
 
 
 class ProcedureRecordResponse(BaseModel):
     procedure_id: str
-    patient_cedula: str
+    patient_id: str
     transcript: str
     input_type: Literal["text", "audio"]
-    triage_data: TriageDataCore
+    preliminary_history: TriageDataCore
     confidence_score: float
     status: str
     vital_signs: VitalSignsCreate | None = None
     comments: list[Comment] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    webhook_delivery: str = "pending"
 
 
 class TriageRecordResponse(BaseModel):
     procedure_id: str
-    patient_cedula: str
-    triage_data: TriageDataCore
+    patient_id: str
+    preliminary_history: TriageDataCore
     status: str

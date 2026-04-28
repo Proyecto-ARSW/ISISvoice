@@ -135,7 +135,7 @@ class TriageExtractionService:
             "Se sugiere orientacion general y control ambulatorio."
         )
 
-    async def _analyze_with_ollama(self, patient_id: str, transcript: str) -> dict[str, Any] | None:
+    async def _analyze_with_ollama(self, transcript: str) -> dict[str, Any] | None:
         if not settings.ollama_base_url or not settings.ollama_model:
             return None
 
@@ -162,13 +162,11 @@ class TriageExtractionService:
                 raw = self._clean_text(body.get("response"))
                 if not raw:
                     return None
-                parsed = json.loads(raw)
-                parsed["idpaciente"] = patient_id
-                return parsed
+                return json.loads(raw)
         except Exception:
             return None
 
-    def _normalize_data(self, patient_id: str, data: dict[str, Any], transcript: str) -> TriageDataCore:
+    def _normalize_data(self, data: dict[str, Any], transcript: str) -> TriageDataCore:
         symptoms = data.get("sintomas") or []
         if isinstance(symptoms, str):
             symptoms = self._split_items(symptoms)
@@ -194,7 +192,6 @@ class TriageExtractionService:
             comentarios_ia = self._build_ai_comment(nivel)
 
         return TriageDataCore(
-            idpaciente=patient_id,
             sintomas=symptoms,
             embarazo=embarazo,
             antecedentes=antecedentes,
@@ -205,11 +202,43 @@ class TriageExtractionService:
             advertenciaIA=self.IA_WARNING,
         )
 
-    async def extract_preliminary_history(self, patient_id: str, transcript: str) -> TriageDataCore:
+    def build_recommendation(self, triage_data: TriageDataCore) -> str:
+        symptoms = triage_data.sintomas or []
+        causes = triage_data.posiblesCausas or []
+        priority = triage_data.nivelPrioridad
+        symptom_text = ", ".join(symptoms) if symptoms else "malestar no especificado"
+        cause_text = ", ".join(causes) if causes else "requiere evaluacion clinica"
+
+        if priority >= 5:
+            return (
+                "Prioridad 5: atencion inmediata. Traslada al paciente a area critica y activa protocolo de emergencia. "
+                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
+            )
+        if priority == 4:
+            return (
+                "Prioridad 4: valoracion prioritaria en menos de 1 hora. Mantener monitorizacion y control de signos vitales. "
+                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
+            )
+        if priority == 3:
+            return (
+                "Prioridad 3: evaluacion pronta, idealmente en las proximas horas. Vigilar evolucion y reforzar signos de alarma. "
+                f"Hallazgos principales: {symptom_text}. Posibles causas: {cause_text}."
+            )
+        if priority == 2:
+            return (
+                "Prioridad 2: cuadro leve a moderado, sin criterios de alarma inmediatos. Indicar observacion y reevaluacion si empeora. "
+                f"Hallazgos principales: {symptom_text}."
+            )
+        return (
+            "Prioridad 1: orientacion ambulatoria y seguimiento si los sintomas persisten. "
+            f"Hallazgos principales: {symptom_text}."
+        )
+
+    async def extract_preliminary_history(self, transcript: str) -> TriageDataCore:
         cleaned = self._clean_text(transcript)
-        ollama_data = await self._analyze_with_ollama(patient_id, cleaned)
+        ollama_data = await self._analyze_with_ollama(cleaned)
         if ollama_data:
-            return self._normalize_data(patient_id, ollama_data, cleaned)
+            return self._normalize_data(ollama_data, cleaned)
 
         fallback_symptoms = self._extract_symptoms(cleaned)
         fallback_background = self._extract_background(cleaned)
@@ -218,7 +247,6 @@ class TriageExtractionService:
         fallback_priority = self._priority_from_content(fallback_symptoms, fallback_pregnancy)
 
         return TriageDataCore(
-            idpaciente=patient_id,
             sintomas=fallback_symptoms,
             embarazo=fallback_pregnancy,
             antecedentes=fallback_background,

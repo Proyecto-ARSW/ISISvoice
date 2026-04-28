@@ -14,7 +14,7 @@ class Settings:
         self.jwt_secret = os.getenv("JWT_SECRET", "")
         self.jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.ollama_model = os.getenv("OLLAMA_MODEL", "medical3.1")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "clinical-intake")
         self.ollama_timeout_seconds = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "12"))
         self.ollama_max_retries = int(os.getenv("OLLAMA_MAX_RETRIES", "1"))
         self.ollama_chat_format = os.getenv("OLLAMA_CHAT_FORMAT", "")
@@ -39,6 +39,13 @@ class Settings:
         self.mongo_max_retries = int(os.getenv("MONGO_MAX_RETRIES", "1"))
         self.queue_max_size = int(os.getenv("SESSION_QUEUE_MAX_SIZE", "32"))
         self.max_history_messages = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
+        self.triage_webhook_url = os.getenv(
+            "TRIAGE_WEBHOOK_URL",
+            "https://asclepio-triage-api.azurewebsites.net/",
+        ).rstrip("/")
+        self.triage_webhook_token = os.getenv("TRIAGE_WEBHOOK_TOKEN", "")
+        self.triage_webhook_timeout_seconds = float(os.getenv("TRIAGE_WEBHOOK_TIMEOUT_SECONDS", "12"))
+        self.triage_webhook_max_retries = int(os.getenv("TRIAGE_WEBHOOK_MAX_RETRIES", "1"))
 
 
 settings = Settings()

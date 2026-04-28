@@ -233,9 +233,9 @@
         </div>
 
         <div class="text-input-section">
-            <input id="patientName" type="text" placeholder="Numero de identificacion" />
+            <input id="patientName" type="text" placeholder="Descripcion breve de la condicion" />
             <input id="patientAge" type="text" placeholder="Sintomas principales" style="max-width:220px;" />
-            <input id="chiefComplaint" type="text" placeholder="Trauma reciente / toxicos / embarazo" />
+            <input id="chiefComplaint" type="text" placeholder="Detalles utiles opcionales" />
         </div>
 
         <div class="status" id="status">
@@ -244,10 +244,10 @@
         </div>
         
         <div class="output-section">
-            <div class="output-title">Ultima transcripcion detectada:</div>
-            <div id="lastTranscript" class="empty">Aun no hay audio enviado</div>
+            <div class="output-title">Recomendacion IA:</div>
+            <div id="lastTranscript" class="empty">Aun no hay recomendacion</div>
             <br />
-            <div class="output-title">Transcription:</div>
+            <div class="output-title">Transcripcion local:</div>
             <div id="transcription" class="empty">Waiting for audio input...</div>
             <div id="finalRecord" style="margin-top: 12px; font-size: 12px; color: #444;"></div>
         </div>
@@ -362,7 +362,7 @@
             startedSession = false;
             transcriptionDiv.textContent = 'Waiting for audio input...';
             transcriptionDiv.classList.add('empty');
-            lastTranscriptDiv.textContent = 'Aun no hay audio enviado';
+            lastTranscriptDiv.textContent = 'Aun no hay recomendacion';
             lastTranscriptDiv.classList.add('empty');
             finalRecordDiv.textContent = '';
             chunkCountEl.textContent = '0';
@@ -489,11 +489,10 @@
                 appendConversationTurn('user', data.transcript);
             }
             if (data.assistant_reply) {
-                appendConversationTurn('assistant', data.assistant_reply);
+                lastTranscriptDiv.textContent = data.assistant_reply;
+                lastTranscriptDiv.classList.remove('empty');
             }
-            if (data.clinical_data && Object.keys(data.clinical_data).length > 0) {
-                finalRecordDiv.textContent = JSON.stringify(data.clinical_data, null, 2);
-            }
+            finalRecordDiv.textContent = data.assistant_reply || '';
 
             chunkCount++;
             chunkCountEl.textContent = chunkCount;
@@ -633,7 +632,7 @@
             }
 
             const data = await response.json();
-            finalRecordDiv.textContent = JSON.stringify(data.final_clinical_history || {}, null, 2);
+            finalRecordDiv.textContent = data.final_clinical_history?.summary || data.final_clinical_history?.clinical_history?.possible_justification || '';
             if (data.persistence === 'persisted') {
                 updateStatus('Sesion completada y guardada', 'connected');
             } else {

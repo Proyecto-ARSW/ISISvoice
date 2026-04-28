@@ -16,7 +16,7 @@ async def lifespan(app: FastAPI):
     await mongo_store.connect()
     yield
     # Shutdown
-    await mongo_store.close()
+    mongo_store.close()
 
 
 app = FastAPI(

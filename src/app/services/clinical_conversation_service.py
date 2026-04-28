@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Any
 from collections import defaultdict
 
 from app.core.settings import settings
 from app.services.mongo_service import mongo_store
+from app.services.triage_service import triage_extraction_service
 
 
 class ClinicalConversationService:
     ALLOWED_FIELDS = {
-        "identification_number",
         "symptoms",
         "current_medications",
         "pregnancy",
@@ -19,7 +18,6 @@ class ClinicalConversationService:
         "possible_justification",
     }
     OUTPUT_FIELD_ORDER = (
-        "identification_number",
         "symptoms",
         "current_medications",
         "pregnancy",
@@ -31,7 +29,7 @@ class ClinicalConversationService:
         # Fallback en memoria para mantener la conversacion si Mongo no esta disponible.
         self._local_history: dict[str, list[dict[str, str]]] = defaultdict(list)
         self._local_structured: dict[str, dict[str, Any]] = defaultdict(dict)
-        self._session_stage: dict[str, str] = defaultdict(lambda: "identification")
+        self._session_stage: dict[str, str] = defaultdict(lambda: "intake")
 
     def _clean_text(self, value: Any) -> str:
         if value is None:
@@ -40,139 +38,6 @@ class ClinicalConversationService:
         if text.lower() in {"none", "null", "undefined", "nan"}:
             return ""
         return text
-
-    def _trim_symptoms(self, value: str) -> str:
-        text = self._clean_text(value)
-        if not text:
-            return ""
-        text = re.split(
-            r",\s*(?:no\s+trauma|trauma|tomo|tomando|medicamentos?|no\s+embarazo|embarazo|porque|debido\s+a|tras|fue\s+despues\s+de|fue\s+después\s+de)\b",
-            text,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0].strip(" .,")
-        return text
-
-    def _extract_fields(self, transcript: str) -> dict[str, Any]:
-        text = self._clean_text(transcript)
-        if not text:
-            return {}
-
-        lower = text.lower()
-        extracted: dict[str, Any] = {}
-
-        id_match = re.search(
-            r"(?:identificacion|numero\s+de\s+identificacion|cedula|documento|id)\s*(?:es|:)?\s*([a-zA-Z0-9-]{4,30})",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if id_match:
-            extracted["identification_number"] = self._clean_text(id_match.group(1)).upper()
-
-        # Fallback simple cuando el usuario solo dicta el numero.
-        if "identification_number" not in extracted:
-            only_number = re.fullmatch(r"\s*\d{5,20}\s*", text)
-            if only_number:
-                extracted["identification_number"] = self._clean_text(text)
-
-        complaint = ""
-        pain_match = re.search(r"(me\s+duele\s+[^\.,;]+)", text, flags=re.IGNORECASE)
-        if pain_match:
-            complaint = self._clean_text(pain_match.group(1))
-        if not complaint:
-            motive_match = re.search(
-                r"(?:motivo(?:\s+principal)?\s+de\s+consulta\s*(?:es|:)?|me\s+siento|siento)\s+(.+)$",
-                text,
-                flags=re.IGNORECASE,
-            )
-            if motive_match:
-                complaint = self._clean_text(motive_match.group(1))
-        if not complaint:
-            tengo_match = re.search(r"\btengo\s+(.+)$", text, flags=re.IGNORECASE)
-            if tengo_match:
-                candidate = self._clean_text(tengo_match.group(1))
-                candidate = re.sub(r"^\d{1,3}\s+anos?\s+y\s+", "", candidate, flags=re.IGNORECASE)
-                if candidate and not re.fullmatch(r"\d{1,3}\s+anos?", candidate, flags=re.IGNORECASE):
-                    complaint = candidate
-        if complaint:
-            cleaned_symptoms = self._trim_symptoms(complaint.rstrip("."))
-            if cleaned_symptoms:
-                extracted["symptoms"] = cleaned_symptoms
-
-        symptoms_match = re.search(r"(?:sintomas?|presento|presenta)\s*(?:como|son|:)?\s+(.+)$", text, flags=re.IGNORECASE)
-        if symptoms_match:
-            cleaned_symptoms = self._trim_symptoms(self._clean_text(symptoms_match.group(1)).rstrip("."))
-            if cleaned_symptoms:
-                extracted["symptoms"] = cleaned_symptoms
-
-        if "symptoms" not in extracted and any(
-            token in lower for token in ["nausea", "vomito", "fiebre", "mareo", "tos", "dolor", "cefalea", "fatiga"]
-        ):
-            cleaned_symptoms = self._trim_symptoms(text)
-            if cleaned_symptoms:
-                extracted["symptoms"] = cleaned_symptoms
-
-        trauma_keywords = ["accidente", "caida", "caída", "golpe", "trauma", "choque"]
-        if re.search(r"\bno\b.*\b(accidente|caida|caída|golpe|trauma|choque)\b", lower):
-            extracted["recent_trauma"] = "no"
-        elif any(word in lower for word in trauma_keywords):
-            extracted["recent_trauma"] = text
-
-        medications_keywords = [
-            "medicamento", "medicamentos", "farmaco", "fármaco", "pastilla", "pastillas", "tratamiento",
-            "tomo", "tomando", "consume", "consumo",
-        ]
-        medications_match = re.search(
-            r"(?:tomo|tomando|consume|consumo|medicamentos?\s*(?:actuales)?\s*(?:son|es|:)?|tratamiento\s*(?:actual)?\s*(?:es|:)?|pastillas?\s*(?:actuales)?\s*(?:son|es|:)?)(.+)$",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if medications_match:
-            meds_value = self._clean_text(medications_match.group(1)).strip(" .,")
-            meds_value = re.split(
-                r",\s*(?:no\s+trauma|no\s+embarazo|fue\s+despues\s+de|fue\s+después\s+de|porque|debido\s+a|trauma|embarazo)\b",
-                meds_value,
-                maxsplit=1,
-                flags=re.IGNORECASE,
-            )[0].strip(" .,")
-            if meds_value:
-                extracted["current_medications"] = meds_value
-        elif any(word in lower for word in medications_keywords):
-            extracted["current_medications"] = text
-        elif re.search(r"\bno\b.*\b(medicamento|medicamentos|farmaco|fármaco|pastilla|pastillas|tratamiento)\b", lower):
-            extracted["current_medications"] = "no"
-
-        if any(word in lower for word in ["embarazada", "embarazo", "gestante", "gestacion", "gestación"]):
-            if re.search(r"\bno\b.*\b(embarazo|embarazada|gestante)\b", lower):
-                extracted["pregnancy"] = "no"
-            else:
-                extracted["pregnancy"] = "si"
-
-        justification_match = re.search(
-            r"(?:porque|por\s+|debido\s+a|despues\s+de|después\s+de|tras)\s+(.+)$",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if justification_match:
-            extracted["possible_justification"] = self._clean_text(justification_match.group(1)).rstrip(".")
-
-        return {k: v for k, v in extracted.items() if k in self.ALLOWED_FIELDS}
-
-    def _merge_structured_data(self, session_id: str, extracted: dict[str, Any]) -> dict[str, Any]:
-        # Lista blanca estricta para evitar persistir campos no requeridos.
-        current = {
-            key: value
-            for key, value in dict(self._local_structured.get(session_id, {})).items()
-            if key in self.ALLOWED_FIELDS
-        }
-        for key, value in extracted.items():
-            if key not in self.ALLOWED_FIELDS:
-                continue
-            cleaned = self._clean_text(value)
-            if cleaned != "":
-                current[key] = value
-        self._local_structured[session_id] = current
-        return current
 
     def _normalize_structured_data(self, structured_data: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
@@ -183,43 +48,21 @@ class ClinicalConversationService:
         return normalized
 
     def _next_stage_and_question(self, structured_data: dict[str, Any]) -> tuple[str, str]:
-        if not structured_data.get("identification_number") or not structured_data.get("symptoms"):
+        if not structured_data.get("symptoms"):
             return (
-                "identification",
-                "Indica numero de identificacion del paciente y sintomas principales.",
+                "intake",
+                "Cuéntame tu condicion o los sintomas que presentas.",
             )
-        if not structured_data.get("recent_trauma"):
-            return (
-                "recent_trauma",
-                "Presenta trauma reciente como accidente, caida o golpe?",
-            )
-        if not structured_data.get("current_medications"):
-            return (
-                "current_medications",
-                "Que medicamentos esta tomando actualmente? Si no toma, responde no.",
-            )
-        if not structured_data.get("pregnancy"):
-            return ("pregnancy", "Existe embarazo o posibilidad de embarazo?")
-        if not structured_data.get("possible_justification"):
-            return (
-                "possible_justification",
-                "Existe algun posible justificante del padecimiento (por ejemplo esfuerzo, golpe, alimento o exposicion)?",
-            )
-        return (
-            "ready_to_finalize",
-            "Gracias. Se completo la captura basica. Si deseas cerrar la historia, usa el endpoint de finalizacion.",
-        )
+        return ("ready_to_finalize", "")
 
     def _build_summary(self, structured_data: dict[str, Any]) -> str:
-        identification_number = self._clean_text(structured_data.get("identification_number")) or "sin identificacion"
         symptoms = self._clean_text(structured_data.get("symptoms")) or "sin sintomas registrados"
         recent_trauma = self._clean_text(structured_data.get("recent_trauma")) or "sin dato de trauma"
         current_medications = self._clean_text(structured_data.get("current_medications")) or "sin dato de medicamentos"
         pregnancy = self._clean_text(structured_data.get("pregnancy")) or "sin dato de embarazo"
         possible_justification = self._clean_text(structured_data.get("possible_justification")) or "sin justificante reportado"
         return (
-            f"Paciente con identificacion {identification_number}. Sintomas: {symptoms}. "
-            f"Trauma reciente: {recent_trauma}. Medicamentos actuales: {current_medications}. "
+            f"Sintomas: {symptoms}. Trauma reciente: {recent_trauma}. Medicamentos actuales: {current_medications}. "
             f"Embarazo: {pregnancy}. Posible justificante: {possible_justification}."
         )
 
@@ -303,11 +146,12 @@ class ClinicalConversationService:
         user_persistence = await self._append_user_message(session_id, text)
 
         _, history_persistence = await self._load_history(session_id)
-        extracted = self._extract_fields(text)
-        merged_structured = self._merge_structured_data(session_id, extracted)
-        next_stage, question = self._next_stage_and_question(merged_structured)
-        self._session_stage[session_id] = next_stage
-        assistant_reply = question
+        triage_data = await triage_extraction_service.extract_preliminary_history(text)
+        recommendation = triage_extraction_service.build_recommendation(triage_data)
+        merged_structured = self._normalize_structured_data(triage_data.model_dump())
+        self._local_structured[session_id] = merged_structured
+        next_stage = "triage_completed"
+        assistant_reply = recommendation
         model_status = "ok"
         structured_data = self._normalize_structured_data(merged_structured)
 
