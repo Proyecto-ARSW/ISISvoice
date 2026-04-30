@@ -1,12 +1,10 @@
-import whisper
 import librosa
 import numpy as np
 import tempfile
 import os
 from pathlib import Path
-import torch
-import torchaudio
-import miniaudio
+
+import httpx
 
 from app.core.settings import settings
 
@@ -16,8 +14,24 @@ _whisper_model = None
 def _get_model():
     global _whisper_model
     if _whisper_model is None:
+        import whisper
         _whisper_model = whisper.load_model(settings.whisper_model)
     return _whisper_model
+
+
+def _transcribe_via_http(file_bytes: bytes, original_filename: str | None = None) -> str:
+    """Call remote Whisper service. Used when WHISPER_API_URL is configured."""
+    suffix = ".wav"
+    if original_filename:
+        ext = Path(original_filename).suffix.lower()
+        if ext:
+            suffix = ext
+    filename = f"audio{suffix}"
+    with httpx.Client(timeout=settings.whisper_timeout_seconds) as client:
+        files = {"file": (filename, file_bytes, "audio/octet-stream")}
+        resp = client.post(f"{settings.whisper_api_url}/transcribe", files=files)
+        resp.raise_for_status()
+        return resp.json().get("text", "").strip()
 
 
 def _decode_and_transcribe(file_path: str) -> str:
@@ -30,6 +44,8 @@ def _decode_and_transcribe(file_path: str) -> str:
     except Exception:
         try:
             # Fallback 1: torchaudio (si hay soporte de codecs disponible).
+            import torch
+            import torchaudio
             waveform, sample_rate = torchaudio.load(file_path)
             if waveform.ndim == 2 and waveform.shape[0] > 1:
                 waveform = waveform.mean(dim=0, keepdim=True)
@@ -38,6 +54,7 @@ def _decode_and_transcribe(file_path: str) -> str:
             audio = waveform.squeeze(0).to(torch.float32).cpu().numpy()
         except Exception:
             # Fallback 2: miniaudio (sin depender de ffmpeg externo para MP3 comunes).
+            import miniaudio
             decoded = miniaudio.decode_file(file_path)
             samples = np.asarray(decoded.samples, dtype=np.float32)
             if decoded.nchannels > 1:
@@ -64,12 +81,18 @@ def _decode_and_transcribe(file_path: str) -> str:
     return result.get("text", "").strip()
 
 def transcribe_audio(file_path: str) -> str:
+    if settings.whisper_api_url:
+        with open(file_path, "rb") as f:
+            return _transcribe_via_http(f.read(), Path(file_path).name)
     return _decode_and_transcribe(file_path)
 
 
 def transcribe_audio_bytes(file_bytes: bytes, original_filename: str | None = None) -> str:
     if not file_bytes:
         return ""
+
+    if settings.whisper_api_url:
+        return _transcribe_via_http(file_bytes, original_filename)
 
     suffix = ".wav"
     if original_filename:

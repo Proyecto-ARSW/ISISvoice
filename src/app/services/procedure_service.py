@@ -85,7 +85,13 @@ class ProcedureService:
         payload = self._build_webhook_payload(procedure, "pending")
         headers = {"Content-Type": "application/json"}
         if settings.triage_webhook_token:
-            headers["Authorization"] = f"Bearer {settings.triage_webhook_token}"
+            headers["x-api-key"] = settings.triage_webhook_token
+
+        params: dict = {}
+        if settings.triage_hospital_id:
+            params["hospital_id"] = settings.triage_hospital_id
+        if settings.triage_enfermero_id:
+            params["enfermero_id"] = settings.triage_enfermero_id
 
         timeout = httpx.Timeout(settings.triage_webhook_timeout_seconds)
         retries = max(0, settings.triage_webhook_max_retries)
@@ -94,7 +100,12 @@ class ProcedureService:
         for attempt in range(retries + 1):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(settings.triage_webhook_url, json=payload, headers=headers)
+                    response = await client.post(
+                        settings.triage_webhook_url,
+                        json=payload,
+                        headers=headers,
+                        params=params,
+                    )
                     response.raise_for_status()
                     return "sent", f"HTTP {response.status_code}"
             except Exception as exc:
