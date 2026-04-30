@@ -226,8 +226,14 @@ async def ingest_symptoms_audio(
 async def update_vital_signs(
     procedure_id: str,
     request: VitalSignsUpdateRequest,
-    _: Annotated[AuthUser, Depends(require_roles(JwtRole.ENFERMERO, JwtRole.MEDICO))],
+    user: Annotated[AuthUser, Depends(require_roles(JwtRole.PACIENTE, JwtRole.ENFERMERO, JwtRole.MEDICO))],
 ) -> ProcedureRecordResponse:
+    if user.role == JwtRole.PACIENTE:
+        procedure_check = await procedure_service.get_procedure(procedure_id)
+        if not procedure_check:
+            raise HTTPException(status_code=404, detail=f"Procedimiento {procedure_id} no encontrado")
+        _ensure_patient_access(user, procedure_check.patient_id)
+
     vital_signs = VitalSignsCreate(**request.model_dump())
     procedure = await procedure_service.add_vital_signs(procedure_id, vital_signs)
     if not procedure:
