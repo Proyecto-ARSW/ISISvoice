@@ -11,8 +11,13 @@ import miniaudio
 from app.core.settings import settings
 
 
-# Cargar modelo una sola vez
-model = whisper.load_model(settings.whisper_model)
+_whisper_model = None
+
+def _get_model():
+    global _whisper_model
+    if _whisper_model is None:
+        _whisper_model = whisper.load_model(settings.whisper_model)
+    return _whisper_model
 
 
 def _decode_and_transcribe(file_path: str) -> str:
@@ -44,7 +49,7 @@ def _decode_and_transcribe(file_path: str) -> str:
                 samples = librosa.resample(samples, orig_sr=decoded.sample_rate, target_sr=16000)
             audio = samples.astype(np.float32)
 
-    result = model.transcribe(
+    result = _get_model().transcribe(
         audio,
         language=settings.whisper_language,
         fp16=False,
