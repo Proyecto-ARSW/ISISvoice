@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.services.mongo_service import mongo_store
-from app.services.speech_service import model as whisper_model
+from app.services.speech_service import _get_model
 
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
@@ -42,7 +42,7 @@ async def health_check() -> HealthResponse:
     
     # Check Whisper (just verify it's loaded)
     try:
-        whisper_status = "loaded" if whisper_model is not None else "not_loaded"
+        whisper_status = "loaded" if _get_model() is not None else "not_loaded"
         dependencies["whisper"] = {"status": whisper_status}
     except Exception as e:
         dependencies["whisper"] = {"status": "error", "error": str(e)}
