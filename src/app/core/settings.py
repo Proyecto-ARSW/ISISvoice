@@ -46,6 +46,11 @@ class Settings:
         self.triage_webhook_token = os.getenv("TRIAGE_WEBHOOK_TOKEN", "")
         self.triage_webhook_timeout_seconds = float(os.getenv("TRIAGE_WEBHOOK_TIMEOUT_SECONDS", "12"))
         self.triage_webhook_max_retries = int(os.getenv("TRIAGE_WEBHOOK_MAX_RETRIES", "1"))
+        # Whisper HTTP service URL. When set, ISISvoice calls remote Whisper instead of local model.
+        self.whisper_api_url = os.getenv("WHISPER_API_URL", "")
+        # TRIAGE service routing — required query params for the ingreso-isisvoice webhook
+        self.triage_hospital_id = os.getenv("TRIAGE_HOSPITAL_ID", "")
+        self.triage_enfermero_id = os.getenv("TRIAGE_ENFERMERO_ID", "")
 
 
 settings = Settings()
