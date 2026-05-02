@@ -1,7 +1,18 @@
 version: '3.9'
 
+# ============================================================
+# ISISvoice — FastAPI core (Azure Web App / local API server)
+# ============================================================
+# This compose file runs ONLY the FastAPI core and optional MongoDB.
+# Ollama and Whisper run separately on the GPU server.
+# See docker-compose.gpu-server.yml for those services.
+#
+# Usage:
+#   API only (MongoDB Atlas):  docker-compose up api
+#   With local MongoDB:        docker-compose --profile full up
+
 services:
-  # MongoDB database service
+
   mongo:
     image: mongo:7-alpine
     container_name: voice-mongo
@@ -23,7 +34,6 @@ services:
     profiles:
       - full
 
-  # FastAPI application service
   api:
     build:
       context: .
@@ -34,26 +44,35 @@ services:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
-      - MONGODB_URI=${MONGODB_URI:-mongodb://mongo:27017}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://localhost:27017}
       - MONGODB_DB=${MONGODB_DB:-voice_medical}
       - MONGO_SERVER_SELECTION_TIMEOUT_MS=${MONGO_SERVER_SELECTION_TIMEOUT_MS:-6000}
       - MONGO_CONNECT_TIMEOUT_MS=${MONGO_CONNECT_TIMEOUT_MS:-6000}
       - MONGO_SOCKET_TIMEOUT_MS=${MONGO_SOCKET_TIMEOUT_MS:-10000}
       - MONGO_OPERATION_TIMEOUT_SECONDS=${MONGO_OPERATION_TIMEOUT_SECONDS:-2.5}
       - MONGO_MAX_RETRIES=${MONGO_MAX_RETRIES:-1}
-      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
-      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-es}
+      # Remote Whisper service URL (required for split deployment)
+      - WHISPER_API_URL=${WHISPER_API_URL}
       - WHISPER_TIMEOUT_SECONDS=${WHISPER_TIMEOUT_SECONDS:-45}
       - WHISPER_MAX_RETRIES=${WHISPER_MAX_RETRIES:-1}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-medical3.1}
+      # Remote Ollama service URL (required for split deployment)
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-clinical-intake}
+      - OLLAMA_TIMEOUT_SECONDS=${OLLAMA_TIMEOUT_SECONDS:-12}
+      - OLLAMA_MAX_RETRIES=${OLLAMA_MAX_RETRIES:-1}
+      - OLLAMA_MAX_CONCURRENT=${OLLAMA_MAX_CONCURRENT:-2}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - TRIAGE_WEBHOOK_URL=${TRIAGE_WEBHOOK_URL}
+      - TRIAGE_WEBHOOK_TOKEN=${TRIAGE_WEBHOOK_TOKEN}
+      - TRIAGE_WEBHOOK_TIMEOUT_SECONDS=${TRIAGE_WEBHOOK_TIMEOUT_SECONDS:-12}
+      - TRIAGE_WEBHOOK_MAX_RETRIES=${TRIAGE_WEBHOOK_MAX_RETRIES:-1}
+      - TRIAGE_HOSPITAL_ID=${TRIAGE_HOSPITAL_ID}
+      - TRIAGE_ENFERMERO_ID=${TRIAGE_ENFERMERO_ID}
+      - SESSION_QUEUE_MAX_SIZE=${SESSION_QUEUE_MAX_SIZE:-32}
+      - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-40}
     volumes:
-      - ./src:/app/src
-      - /tmp/whisper_cache:/root/.cache/whisper
       - ./logs:/app/logs
-    depends_on:
-      mongo:
-        condition: service_healthy
     networks:
       - voice_network
     healthcheck:
@@ -62,19 +81,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  # OpenAPI documentation
-  docs:
-    image: nginx:alpine
-    container_name: voice-docs
-    ports:
-      - "8001:80"
-    volumes:
-      - ./docs:/usr/share/nginx/html:ro
-    profiles:
-      - docs
 
 networks:
   voice_network:
@@ -83,8 +89,3 @@ networks:
 volumes:
   mongo_data:
     driver: local
-
-# Profiles:
-# - full: includes MongoDB
-# - docs: includes documentation server
-# Usage: docker-compose --profile full up
