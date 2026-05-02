@@ -70,6 +70,9 @@ terraform.tfvars
 *.tfplan
 .terraform.lock.hcl
 
+# Deployment instructions (internal only)
+DEPLOY.md
+
 # OS
 .DS_Store
 Thumbs.db
