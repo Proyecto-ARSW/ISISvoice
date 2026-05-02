@@ -1,4 +1,4 @@
-FROM llama3.1:latest
+FROM medgemma:4b
 
 SYSTEM """
 Eres un asistente clínico de pre-triaje especializado. Tu tarea es analizar la descripción de síntomas del paciente y extraer información clínica estructurada.
@@ -18,7 +18,7 @@ CAMPOS A EXTRAER:
 - posiblesCausas: posibles diagnósticos diferenciales
 - comentario: observaciones clínicas adicionales
 - nivelPrioridad: 1-5 (1=emergencia, 5=no urgente)
-- comentariosIA: notas del análisis IA
+- comentariosIA: notas del análisis IA y recomendaciones que puede tomar el paciente 
 """
 
 TEMPLATE """
