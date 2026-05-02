@@ -12,6 +12,10 @@ import httpx
 from app.core.settings import settings
 from app.models import TriageDataCore
 
+# Tracks active Ollama requests. When >= ollama_max_concurrent, new requests
+# skip Ollama and fall directly to heuristics instead of queuing.
+_ollama_active: int = 0
+
 
 class TriageExtractionService:
     """Build structured preliminary history with deterministic fallback + Ollama."""
@@ -147,8 +151,11 @@ class TriageExtractionService:
         )
 
     async def _analyze_with_ollama(self, transcript: str) -> dict[str, Any] | None:
+        global _ollama_active
         if not settings.ollama_base_url or not settings.ollama_model:
             return None
+        if _ollama_active >= settings.ollama_max_concurrent:
+            return None  # Ollama saturated — fall to heuristics immediately
 
         prompt = (
             "Analiza el siguiente relato clinico y responde SOLO JSON valido con esta estructura exacta: "
@@ -164,6 +171,7 @@ class TriageExtractionService:
             "format": "json",
         }
 
+        _ollama_active += 1
         try:
             timeout = httpx.Timeout(settings.ollama_timeout_seconds)
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -176,6 +184,8 @@ class TriageExtractionService:
                 return json.loads(raw)
         except Exception:
             return None
+        finally:
+            _ollama_active -= 1
 
     def _normalize_data(self, data: dict[str, Any], transcript: str) -> TriageDataCore:
         symptoms = data.get("sintomas") or []
