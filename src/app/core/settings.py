@@ -51,6 +51,8 @@ class Settings:
         # TRIAGE service routing — required query params for the ingreso-isisvoice webhook
         self.triage_hospital_id = os.getenv("TRIAGE_HOSPITAL_ID", "")
         self.triage_enfermero_id = os.getenv("TRIAGE_ENFERMERO_ID", "")
+        # Max concurrent Ollama requests before falling back to heuristics
+        self.ollama_max_concurrent = int(os.getenv("OLLAMA_MAX_CONCURRENT", "2"))
 
 
 settings = Settings()
