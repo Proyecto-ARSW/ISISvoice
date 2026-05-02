@@ -1,158 +1,99 @@
-# Voice Clinica
+# ISISvoice
 
-## Resumen de arquitectura
+Medical triage voice intake microservice for the ASCLEPIO hospital system. Accepts patient audio or text, extracts structured clinical triage data, and delivers results to ASCLEPIO-M1 via webhook.
 
-### 1) Capa de API
-- Framework: FastAPI.
-- Entradas: REST para archivos completos y flujo clinico por HTTPS.
-- Salidas: JSON de transcripcion, siguiente pregunta clinica y estado de persistencia.
+## Architecture
 
-### 2) Capa de orquestacion clinica deterministica
-- Servicio: clinical_conversation_service.
-- Modelo: reglas por etapas enfocadas en datos de pre-triaje.
-- Garantia: salida JSON estable para almacenamiento y consulta.
-- Beneficio: no depende de disponibilidad de LLM para responder.
+```
+[ASCLEPIO-M1 / Client]
+        │
+        ▼
+[ISISvoice — FastAPI]   ──WHISPER_API_URL──▶  [Whisper Server]
+        │
+        └──OLLAMA_BASE_URL──▶  [Ollama Server]
+        │
+        └──TRIAGE_WEBHOOK_URL──▶  [ASCLEPIO-NestJS-M1]
+        │
+        └──MONGODB_URI──▶  [MongoDB Atlas]
+```
 
-### 3) Capa de transcripcion
-- Whisper para ASR en espanol.
-- Flujo UI recomendado: grabar audio completo y enviar con boton.
-- Decodificacion robusta en archivos: librosa y fallback con torchaudio.
+**Split deployment:**
 
-### 4) Capa de entrevista clinica
-- Motor de reglas local para capturar campos faltantes.
-- Extraccion heuristica desde texto transcrito.
-- Pregunta siguiente basada en faltantes clinicos.
+| Part | Target | Services |
+|------|--------|---------|
+| AI backend | Own GPU server | Ollama + Whisper |
+| API core | Azure Web App | FastAPI + heuristics |
 
-### 5) Capa de persistencia
-- MongoDB (Atlas o local) con Motor (async).
-- Colecciones: sessions y messages.
-- Estrategia de resiliencia: buffered mode cuando Mongo no responde.
+## Input flows
 
-## Tecnologias y por que se eligieron
+**Audio intake** → Whisper (transcription) → Ollama (extraction) → webhook to M1
 
-- FastAPI:
-  - Alto rendimiento async.
-  - Swagger integrado.
+**Text intake** → Ollama (extraction) → webhook to M1
 
-- Whisper:
-  - Muy buena precision en espanol.
-  - Funciona local sin dependencia de API externa.
+**Saturation fallback** → If Ollama is busy or slow, heuristic engine responds immediately without queuing.
 
-- MongoDB:
-  - Esquema flexible para historia clinica incremental.
-  - Facil versionado de campos clinicos y metadata.
+## API
 
-- Motor (driver async):
-  - Integracion natural con FastAPI async.
-  - Menor bloqueo del event loop.
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/triage/symptoms/text` | JWT | Text triage intake |
+| POST | `/api/v1/triage/symptoms/audio` | JWT | Audio triage intake |
+| POST | `/api/v1/triage/symptoms/audio/base64` | JWT | Base64 audio intake |
+| PUT | `/api/v1/triage/record/{id}/vital-signs` | JWT | Add vital signs |
+| GET | `/api/v1/triage/record/{id}/preliminary-history` | JWT | Get extracted triage data |
+| GET | `/api/v1/triage/procedure/{id}` | JWT | Get full procedure |
+| GET | `/api/v1/triage/procedures/my` | JWT (PACIENTE) | Patient's procedures |
+| GET | `/api/v1/triage/records` | JWT (ENFERMERO+) | All records |
+| POST | `/api/v1/triage/record/{id}/comment` | JWT | Add comment |
+| POST | `/api/v1/triage/record/{id}/close` | JWT | Close procedure |
+| GET | `/api/v1/health` | — | Health check |
+| GET | `/api/v1/ready` | — | Readiness probe |
+| GET | `/docs` | — | Swagger UI |
+| GET | `/client.html` | — | Web voice client |
 
-## Flujo funcional recomendado para entrevista
+## Triage output structure
 
-1. Abrir client.html.
-2. Iniciar sesion clinica.
-3. Start Recording.
-4. Hablar.
-5. Stop Recording.
-6. Enviar Audio (audio completo).
-7. Revisar Ultima transcripcion detectada.
-8. Repetir ciclos de grabacion/envio hasta completar `clinical_data`.
-9. Finalizar sesion para consolidar historia.
+```json
+{
+  "sintomas": ["string"],
+  "embarazo": false,
+  "antecedentes": ["string"],
+  "posiblesCausas": ["string"],
+  "nivelPrioridad": 3,
+  "comentario": "string",
+  "comentariosIA": "string",
+  "advertenciaIA": "string"
+}
+```
 
-Nota:
-- La sesion se mantiene hasta Finalizar Sesion.
-- Esto evita reinicios de contexto y preguntas repetitivas de arranque.
+Priority scale: Manchester triage — 1 (critical) to 5 (non-urgent).
 
-## Endpoints principales
+## Resilience
 
-- GET /speech/health
-- POST /speech/transcribe-file
-- POST /speech/ia/analyze
-- POST /speech/flow/audio
-- POST /speech/clinical/start
-- POST /speech/clinical/audio
-- POST /speech/clinical/finalize/{session_id}
+- Ollama timeout → heuristic extraction, no queue wait
+- Ollama saturated (`OLLAMA_MAX_CONCURRENT`) → immediate heuristic fallback
+- MongoDB unavailable → in-memory buffer, flushes on reconnect
+- Whisper failure → HTTP error returned to caller
 
-Estructura de salida clinica (campo `clinical_data`):
-- identification_number
-- symptoms
-- current_medications
-- pregnancy
-- recent_trauma
-- possible_justification
+## Environment
 
-Swagger:
-- http://localhost:8000/docs
+Copy `.env.example` → `.env`. Required variables:
 
-Cliente web:
-- http://localhost:8000/client.html
+| Variable | Description |
+|----------|-------------|
+| `OLLAMA_BASE_URL` | Ollama server URL |
+| `WHISPER_API_URL` | Whisper server URL |
+| `MONGODB_URI` | MongoDB connection string |
+| `JWT_SECRET` | Must match ASCLEPIO-NestJS-M1 |
+| `TRIAGE_WEBHOOK_URL` | M1 ingestion endpoint |
+| `TRIAGE_WEBHOOK_TOKEN` | M1 API key |
+| `TRIAGE_HOSPITAL_ID` | Hospital ID for webhook |
+| `TRIAGE_ENFERMERO_ID` | Nurse ID for webhook |
 
-## Estructura del proyecto
+## Tech stack
 
-src/app/
-- core/settings.py
-- main.py
-- routers/speech_router.py
-- services/speech_service.py
-- services/mongo_service.py
-- services/clinical_conversation_service.py
-
-Raiz:
-- client.html
-- start.sh
-- docker-compose.yml
-- infra/terraform/
-
-## Variables de entorno principales
-
-ASR:
-- WHISPER_MODEL
-- WHISPER_LANGUAGE
-- WHISPER_TIMEOUT_SECONDS
-- WHISPER_MAX_RETRIES
-- WHISPER_BEAM_SIZE
-- WHISPER_BEST_OF
-
-Mongo:
-- MONGODB_URI
-- MONGODB_DB
-- MONGO_SERVER_SELECTION_TIMEOUT_MS
-- MONGO_CONNECT_TIMEOUT_MS
-- MONGO_SOCKET_TIMEOUT_MS
-- MONGO_OPERATION_TIMEOUT_SECONDS
-- MONGO_MAX_RETRIES
-
-## Escalabilidad y resiliencia
-
-Implementado:
-- Motor clinico deterministico sin dependencia de LLM para el flujo principal.
-- Timeouts y retries para Whisper y Mongo.
-- Fallback buffered si Mongo falla.
-
-Recomendado a futuro:
-- Redis para estado distribuido de sesiones en multi-instancia.
-- Worker pool externo (Celery/RQ) para tareas pesadas.
-
-
-## Ejecucion local
-
-1. Dependencias:
-- Mongo Atlas o Mongo local.
-
-2. Inicio:
-
-- Ejecuta: ./start.sh
-- Windows (PowerShell):
-  - `python -m uvicorn app.main:app --app-dir src --reload --port 8000`
-
-3. Verificacion rapida:
-- http://localhost:8000/speech/health
-- http://localhost:8000/client.html
-
-## Infraestructura
-
-Docker:
-- docker-compose.yml para API + Mongo local opcional.
-
-Terraform:
-- infra/terraform con base para despliegue EC2.
-
+- **FastAPI** + Uvicorn — async REST API
+- **OpenAI Whisper** — Spanish speech-to-text (runs on GPU server)
+- **Ollama** — local LLM inference (runs on GPU server)
+- **MongoDB** + Motor — async persistence
+- **PyJWT** — token validation (shared secret with M1)
