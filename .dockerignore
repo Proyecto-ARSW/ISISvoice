@@ -34,5 +34,4 @@ wheels/
 .DS_Store
 README.md
 docker-compose.yml
-client.html
 client_websocket.py

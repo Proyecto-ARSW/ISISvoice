@@ -12,7 +12,7 @@ version: '3.9'
 #   docker-compose -f docker-compose.gpu-server.yml up -d
 #
 # After first start, load the clinical model:
-#   docker exec isisvoice-ollama ollama pull llama3.1
+#   docker exec isisvoice-ollama ollama pull medgemma:4b
 #   docker exec isisvoice-ollama ollama create clinical-intake -f /Modelfile.clinical-intake
 
 services:
@@ -34,14 +34,13 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    # Uncomment for NVIDIA GPU support:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   whisper:
     build:
@@ -51,8 +50,15 @@ services:
     ports:
       - "8001:8001"
     environment:
-      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
       WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-es}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     volumes:
       - whisper_cache:/root/.cache/whisper
     restart: unless-stopped
