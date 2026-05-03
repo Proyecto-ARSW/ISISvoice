@@ -21,21 +21,6 @@ CAMPOS A EXTRAER:
 - comentariosIA: notas del análisis IA y recomendaciones que puede tomar el paciente 
 """
 
-TEMPLATE """
-{{ .Prompt }}
-
-Responde con este JSON exacto:
-{
-  "sintomas": string|null,
-  "embarazo": "si"|"no"|null,
-  "antecedentes": string|null,
-  "posiblesCausas": string|null,
-  "comentario": string|null,
-  "nivelPrioridad": 1-5|null,
-  "comentariosIA": string|null
-}
-"""
-
 PARAMETER temperature 0.1
 PARAMETER num_ctx 4096
 PARAMETER stop "```"
