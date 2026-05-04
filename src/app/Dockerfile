@@ -25,7 +25,8 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PATH=/root/.local/bin:$PATH
+    PATH=/root/.local/bin:$PATH \
+    PYTHONPATH=/root/.local/lib/python3.11/site-packages
 
 WORKDIR /app
 
@@ -46,7 +47,9 @@ COPY .env.example /app/.env.example
 
 # Create application user for security
 RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app && \
+    chmod 755 /root && \
+    chmod -R a+rX /root/.local
 
 USER appuser
 
