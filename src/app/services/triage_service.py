@@ -837,6 +837,9 @@ class TriageExtractionService:
             "format": "json",
         }
 
+        import logging
+        _log = logging.getLogger(__name__)
+        _log.info(f"[Ollama] url={settings.ollama_base_url} model={settings.ollama_model} timeout={settings.ollama_timeout_seconds}")
         _ollama_active += 1
         try:
             timeout = httpx.Timeout(settings.ollama_timeout_seconds)
@@ -846,9 +849,13 @@ class TriageExtractionService:
                 body = response.json()
                 raw = self._clean_text(body.get("response"))
                 if not raw:
+                    _log.warning("[Ollama] response vacío — fallback")
                     return None
-                return json.loads(raw)
-        except Exception:
+                stripped = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+                stripped = re.sub(r"\s*```$", "", stripped.strip())
+                return json.loads(stripped)
+        except Exception as e:
+            _log.error(f"[Ollama] FALLÓ {type(e).__name__}: {e}")
             return None
         finally:
             _ollama_active -= 1
