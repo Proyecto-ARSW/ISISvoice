@@ -1,10 +1,4 @@
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
-openai-whisper>=20231117
-torch>=2.0.0
-torchaudio>=2.0.0
-librosa>=0.10.0
-soundfile>=0.12.1
-miniaudio>=1.61
-numpy
+faster-whisper>=1.0.0
