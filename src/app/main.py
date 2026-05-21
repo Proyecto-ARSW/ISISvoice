@@ -16,7 +16,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     await mongo_store.connect()
     yield
-    await mongo_store.close()
+    mongo_store.close()
 
 
 app = FastAPI(
